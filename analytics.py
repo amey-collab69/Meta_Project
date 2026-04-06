@@ -219,7 +219,7 @@ class DataExporter:
                 val = str(row.get(header, ""))
                 # Escape quotes and commas
                 if "," in val or '"' in val:
-                    val = f'"{val.replace('"', '""')}"'
+                    val = f'"{val.replace(chr(34), chr(34)+chr(34))}"'
                 values.append(val)
             lines.append(",".join(values))
         
