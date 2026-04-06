@@ -1,12 +1,11 @@
 """
-SupportAI-Env — FastAPI Server (Enhanced Real-Time Version)
-Endpoints: POST /reset, POST /step, GET /state, GET /health, GET /metrics
-Serves GUI at GET /
-Features: Real-time updates, session management, metrics tracking, health checks
+SupportAI-Env — FastAPI Server (Advanced Production Version 3.0)
+Features: Database persistence, authentication, analytics, advanced grading,
+rate limiting, security, batch processing, and real-time WebSocket updates
 """
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request, Header
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, Dict, List
@@ -15,14 +14,29 @@ import time
 import asyncio
 import json
 from collections import defaultdict
+import logging
+from datetime import datetime
 
 from env import SupportEnv, Action
 from tasks import TASKS
 from grader import grade
+from database import db, SessionRecord
+from analytics import analytics, exporter
+from security import security, rate_limiter, validator
+from advanced_grader import grader, batch_grader
 
-app = FastAPI(title="SupportAI-Env", version="2.0.0", description="Enhanced Real-Time Customer Support AI Environment")
+# ─── Logging Setup ──────────────────────────────────────────────────────────
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Add CORS middleware for better API access
+app = FastAPI(
+    title="SupportAI-Env",
+    version="3.0.0",
+    description="Advanced Customer Support AI Training Platform with Database, Analytics, and Security"
+)
+
+# ─── Middleware ───────────────────────────────────────────────────────────
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -75,6 +89,28 @@ class MetricsResponse(BaseModel):
     active_sessions: int
     task_counts: Dict[str, int]
     uptime_seconds: float
+
+# ─── Authentication Schemas ──────────────────────────────────────────────────
+
+class RegisterRequest(BaseModel):
+    username: str
+    email: Optional[str] = None
+    password: str
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    username: str
+
+# ─── Export Schemas ─────────────────────────────────────────────────────────
+
+class ExportRequest(BaseModel):
+    format: str = "json"  # json, csv
+    include_sessions: bool = True
 
 # ─── Helper Functions ────────────────────────────────────────────────────────
 
@@ -131,22 +167,176 @@ def get_metrics():
         uptime_seconds=round(uptime, 2)
     )
 
+# ─── Authentication Endpoints ────────────────────────────────────────────────
+
+@app.post("/auth/register", response_model=TokenResponse)
+def register(req: RegisterRequest):
+    """Register a new user."""
+    # Validate inputs
+    username_valid, username_err = validator.validate_username(req.username)
+    if not username_valid:
+        raise HTTPException(status_code=400, detail=username_err)
+    
+    if req.email:
+        email_valid, email_err = validator.validate_email(req.email)
+        if not email_valid:
+            raise HTTPException(status_code=400, detail=email_err)
+    
+    password_valid, password_err = validator.validate_password(req.password)
+    if not password_valid:
+        raise HTTPException(status_code=400, detail=password_err)
+    
+    # Check if user already exists
+    existing = db.get_user(req.username)
+    if existing:
+        raise HTTPException(status_code=409, detail="Username already exists")
+    
+    # Create user
+    user_id = str(uuid.uuid4())
+    password_hash, _ = security.hash_password(req.password)
+    
+    db.create_user(user_id, req.username, req.email, password_hash)
+    
+    # Create token
+    token = security.create_token(user_id, req.username)
+    
+    logger.info(f"New user registered: {req.username}")
+    
+    return TokenResponse(access_token=token, username=req.username)
+
+@app.post("/auth/login", response_model=TokenResponse)
+def login(req: LoginRequest):
+    """Login user."""
+    # Validate username format
+    username_valid, _ = validator.validate_username(req.username)
+    if not username_valid:
+        raise HTTPException(status_code=400, detail="Invalid username")
+    
+    # Check user exists
+    user = db.get_user(req.username)
+    if not user or not security.verify_password(req.password, user.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    
+    # Create token
+    token = security.create_token(user["user_id"], req.username)
+    logger.info(f"User logged in: {req.username}")
+    
+    return TokenResponse(access_token=token, username=req.username)
+
+def verify_token(request: Request) -> str:
+    """Helper to verify token and extract user_id."""
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid token")
+    
+    token = auth_header[7:]
+    payload = security.verify_token(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    
+    return payload.get("user_id")
+
+# ─── Analytics Endpoints ────────────────────────────────────────────────────
+
+@app.get("/analytics/user")
+def get_user_analytics(request: Request):
+    """Get analytics for current user."""
+    user_id = verify_token(request)
+    analysis = analytics.analyze_user(user_id)
+    return analysis
+
+@app.get("/analytics/task/{task_id}")
+def get_task_analytics(task_id: str):
+    """Get analytics for a specific task across all users."""
+    report = analytics.task_performance_report(task_id)
+    return report
+
+@app.get("/analytics/leaderboard")
+def get_leaderboard(limit: int = 50):
+    """Get global leaderboard."""
+    db.refresh_leaderboard(limit)
+    leaderboard = db.get_leaderboard(limit)
+    return {"leaderboard": leaderboard, "total": len(leaderboard)}
+
+# ─── Export & Report Endpoints ──────────────────────────────────────────────
+
+@app.post("/export/report")
+def export_user_report(req: ExportRequest, request: Request):
+    """Export user data as report."""
+    user_id = verify_token(request)
+    
+    report = exporter.generate_report(user_id, include_sessions=req.include_sessions)
+    
+    if req.format == "csv":
+        sessions = report.get("sessions", [])
+        csv_data = exporter.to_csv(sessions)
+        return {"format": "csv", "data": csv_data}
+    else:
+        return report
+
+@app.get("/export/sessions")
+def list_user_sessions(request: Request, limit: int = 100):
+    """Get user's session history."""
+    user_id = verify_token(request)
+    sessions = db.get_user_sessions(user_id, limit=limit)
+    return {
+        "user_id": user_id,
+        "total_sessions": len(sessions),
+        "sessions": [
+            {
+                "session_id": s["session_id"],
+                "task_id": s["task_id"],
+                "status": s["status"],
+                "final_score": s["final_score"],
+                "grade_label": s["grade_label"],
+                "step_count": s["step_count"],
+                "created_at": s["created_at"]
+            }
+            for s in sessions
+        ]
+    }
+
+# ─── Enhanced Reset with Database Persistence ───────────────────────────────
+
 @app.post("/reset")
-async def reset(req: Optional[ResetRequest] = None):
+async def reset(req: ResetRequest, request: Request = None):
+    """Reset a session (optionally authenticated)."""
     start_time = time.time()
-    task_id = req.task_id if req else "easy"
+    
+    # Rate limiting
+    client_id = request.client.host if request else "unknown"
+    allowed, rate_info = rate_limiter.is_allowed(client_id)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Too many requests")
+    
+    # Get user_id if authenticated
+    user_id = None
+    if request and request.headers.get("Authorization"):
+        try:
+            user_id = verify_token(request)
+        except:
+            pass  # Allow anonymous usage
+    
+    task_id = req.task_id
     if task_id not in TASKS:
         raise HTTPException(status_code=400, detail=f"Unknown task_id '{task_id}'. Choose: easy, medium, hard")
+    
     session_id = req.session_id or str(uuid.uuid4())
     task = TASKS[task_id]
     env = SupportEnv(task)
     obs = env.reset()
+    
+    # Store in database
+    db_session = db.create_session(session_id, task_id, user_id)
+    
     _sessions[session_id] = {
         "env": env,
         "task": task,
         "done": False,
         "created_at": time.time(),
-        "last_activity": time.time()
+        "last_activity": time.time(),
+        "user_id": user_id,
+        "db_session": db_session
     }
     
     duration_ms = (time.time() - start_time) * 1000
@@ -160,6 +350,10 @@ async def reset(req: Optional[ResetRequest] = None):
         "processing_time_ms": round(duration_ms, 2),
         "type": "reset"
     }
+    
+    if user_id:
+        logger.info(f"Session {session_id} started by user {user_id}")
+    
     await _broadcast_update(session_id, result)
     return result
 
@@ -225,7 +419,13 @@ async def custom_reset(req: CustomResetRequest):
 
 @app.post("/step")
 async def step(req: StepRequest):
+    """Execute an action step with advanced grading and database persistence."""
     start_time = time.time()
+    
+    # Rate limiting
+    allowed, rate_info = rate_limiter.is_allowed("step")
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Too many requests")
     
     session = _sessions.get(req.session_id)
     if not session:
@@ -239,7 +439,7 @@ async def step(req: StepRequest):
     session["done"] = done
     session["last_activity"] = time.time()
 
-    print(f"[ACTION] {req.action_type} | reward={reward} | state={obs.current_state} | valid={info.get('valid')} | time={info.get('processing_time_ms', 0)}ms")
+    logger.info(f"Action: {req.action_type} | Reward: {reward} | Done: {done}")
 
     result = {
         "session_id": req.session_id,
@@ -250,7 +450,8 @@ async def step(req: StepRequest):
     }
     
     if done:
-        grade_result = grade(
+        # Use advanced grader for more detailed feedback
+        grade_result = grader.grade_comprehensive(
             task=session["task"],
             action_history=env._action_history,
             total_reward=env.total_reward(),
@@ -259,8 +460,26 @@ async def step(req: StepRequest):
             intent_detected=obs.intent,
             tone=obs.sentiment,
         )
+        
         result["grade"] = grade_result
-        print(f"[GRADE] {grade_result}")
+        
+        # Persist to database
+        user_id = session.get("user_id")
+        db.update_session(
+            req.session_id,
+            status="completed",
+            final_score=grade_result.get("final_score", 0.0),
+            grade_label=grade_result.get("label", ""),
+            step_count=obs.step_count,
+            total_reward=env.total_reward(),
+            action_history=env._action_history
+        )
+        
+        # Update user stats if authenticated
+        if user_id:
+            db.update_user_stats(user_id)
+        
+        logger.info(f"Session {req.session_id} completed with grade: {grade_result.get('label')}")
     
     duration_ms = (time.time() - start_time) * 1000
     _track_response_time(duration_ms)
@@ -312,7 +531,101 @@ def list_sessions():
         ]
     }
 
-@app.websocket("/ws/{session_id}")
+# ─── Advanced Grading Endpoints ──────────────────────────────────────────────
+
+@app.post("/grade/batch")
+def batch_grade(sessions: List[Dict]):
+    """Grade multiple sessions at once with aggregate statistics."""
+    if not sessions or len(sessions) == 0:
+        raise HTTPException(status_code=400, detail="No sessions provided")
+    
+    # Limit to prevent abuse
+    if len(sessions) > 100:
+        raise HTTPException(status_code=400, detail="Maximum 100 sessions per batch")
+    
+    result = batch_grader.grade_batch(sessions)
+    return result
+
+@app.get("/api/info")
+def api_info():
+    """Get API information and available endpoints."""
+    return {
+        "title": "SupportAI-Env Advanced API",
+        "version": "3.0.0",
+        "description": "Customer Support AI Training Platform",
+        "endpoints": {
+            "authentication": [
+                "POST /auth/register - Register new user",
+                "POST /auth/login - Login user"
+            ],
+            "sessions": [
+                "POST /reset - Start new session",
+                "POST /custom_reset - Start custom scenario",
+                "POST /step - Execute action",
+                "GET /state - Get current state",
+                "GET /sessions - List active",
+                "DELETE /session/{id} - Delete session"
+            ],
+            "analytics": [
+                "GET /analytics/user - User performance",
+                "GET /analytics/task/{id} - Task analytics",
+                "GET /analytics/leaderboard - Global leaderboard"
+            ],
+            "export": [
+                "POST /export/report - Export user report",
+                "GET /export/sessions - Get session history"
+            ],
+            "grading": [
+                "POST /grade/batch - Batch grade sessions"
+            ],
+            "monitoring": [
+                "GET /health - Health status",
+                "GET /metrics - System metrics",
+                "GET /task_catalog - Available tasks"
+            ]
+        },
+        "features": [
+            "Persistent database storage",
+            "User authentication & authorization",
+            "Advanced analytics & insights",
+            "Real-time WebSocket updates",
+            "Rate limiting & security",
+            "Detailed grading with feedback",
+            "Data export (JSON/CSV)",
+            "Leaderboards"
+        ]
+    }
+
+# ─── Health & Monitoring ────────────────────────────────────────────────────
+
+@app.get("/system/info")
+def system_info():
+    """Get detailed system information."""
+    uptime = time.time() - _metrics["start_time"]
+    
+    # Clean up old rate limit buckets
+    rate_limiter.cleanup_old_buckets()
+    
+    # Clean up expired tokens
+    security.cleanup_expired_tokens()
+    
+    return {
+        "timestamp": datetime.now().isoformat(),
+        "uptime_seconds": round(uptime, 2),
+        "uptime_formatted": f"{int(uptime // 3600)}h {int((uptime % 3600) // 60)}m",
+        "memory": {
+            "active_sessions": len(_sessions),
+            "active_tokens": len(security.active_tokens),
+            "rate_limit_buckets": len(rate_limiter.buckets)
+        },
+        "metrics": {
+            "total_sessions": _metrics["total_sessions"],
+            "total_steps": _metrics["total_steps"],
+            "avg_response_time_ms": round(_metrics["avg_response_time_ms"], 2)
+        }
+    }
+
+# ─── WebSocket ────────────────────────────────────────────────────────────
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
     await websocket.accept()
     _active_connections[session_id] = websocket
@@ -679,7 +992,7 @@ let isDone = false;
 let metricsTimer = null;
 
 function titleCase(value) {
-  return String(value || "--").replace(/_/g, " ").replace(/\\b\\w/g, c => c.toUpperCase());
+  return String(value || "--").replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
 }
 
 function escapeHtml(value) {
