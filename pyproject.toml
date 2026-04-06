@@ -53,7 +53,7 @@ Repository = "https://github.com/amey-collab69/Meta_Project"
 Documentation = "https://huggingface.co/spaces/sorf/supportai-env"
 
 [project.scripts]
-server = "main:app"
+server = "app:main"
 supportai-server = "start_server:main"
 
 [tool.setuptools]
