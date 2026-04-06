@@ -159,8 +159,7 @@ class AdvancedGrader:
             }
             final_score += criterion_score * weight
         
-        # Ensure score is strictly between 0 and 1 (not 0.0 or 1.0)
-        final_score = round(min(0.99, max(0.01, final_score)), 4)
+        final_score = round(min(1.0, max(0.0, final_score)), 4)
         
         # Determine grade label
         if final_score >= rubric.threshold_excellent:
