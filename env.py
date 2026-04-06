@@ -252,22 +252,13 @@ def detect_tone(message: str, use_cache: bool = True) -> str:
     # Enhanced rule-based detection
     rule_tone = _enhanced_rule_based_tone(msg)
 
-    # Use OpenEnv-provided API credentials or fallback to environment
-    # Check: API_KEY (OpenEnv) -> OPENAI_APT_KEY (HF secret) -> OPENAI_API_KEY (standard)
-    api_key = os.getenv("API_KEY") or os.getenv("OPENAI_APT_KEY") or os.getenv("OPENAI_API_KEY", "")
-    base_url = os.getenv("API_BASE_URL")
-    
+    api_key = os.getenv("OPENAI_API_KEY", "")
     if not api_key:
         _tone_cache[msg] = (rule_tone, time.time())
         return rule_tone
 
     try:
-        # Initialize OpenAI client with OpenEnv proxy if provided
-        if base_url:
-            client = OpenAI(api_key=api_key, base_url=base_url, timeout=3.0)
-        else:
-            client = OpenAI(api_key=api_key, timeout=3.0)
-        
+        client = OpenAI(api_key=api_key, timeout=3.0)  # 3 second timeout
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
@@ -440,11 +431,7 @@ def calculate_reward(
     if action not in expected_actions and is_valid:
         reward -= 0.3
 
-    # Ensure reward is strictly between 0 and 1 (not -1 to 1)
-    # Map from [-1, 1] to (0, 1) strictly
-    reward = (reward + 1.0) / 2.0  # Maps [-1,1] to [0,1]
-    reward = max(0.01, min(0.99, reward))  # Ensure strictly between 0 and 1
-    return round(reward, 4)
+    return round(max(-1.0, min(1.0, reward)), 4)
 
 # ─── Environment ─────────────────────────────────────────────────────────────
 
@@ -515,9 +502,8 @@ class SupportEnv:
         
         # Validate action type
         if act not in VALID_ACTIONS:
-            self._step_count += 1
             processing_time = (time.time() - start_time) * 1000
-            return self._obs, 0.01, False, {
+            return self._obs, -0.5, False, {
                 "error": f"Invalid action type '{act}'. Must be one of: {VALID_ACTIONS}",
                 "valid": False,
                 "next_state": self._current_state,
@@ -622,7 +608,6 @@ class SupportEnv:
         )
         
         info["processing_time_ms"] = round(processing_time, 2)
-        info["score"] = reward  # Add score for OpenEnv validation
         return self._obs, reward, done, info
 
     def state(self) -> Observation:
