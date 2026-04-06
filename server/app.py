@@ -4,6 +4,7 @@ from typing import Optional
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
+import uvicorn
 
 from support_inbox_env.environment import SupportInboxEnvironment
 from support_inbox_env.models import (
@@ -113,3 +114,11 @@ def step(request: StepRequest) -> StepResponse:
 @app.get("/state", response_model=EnvironmentState)
 def state() -> EnvironmentState:
     return ENVIRONMENT.state()
+
+
+def main() -> None:
+    uvicorn.run("server.app:app", host="0.0.0.0", port=7860)
+
+
+if __name__ == "__main__":
+    main()
