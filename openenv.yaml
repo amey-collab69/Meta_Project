@@ -1,0 +1,16 @@
+spec_version: 1
+name: support-inbox-openenv
+version: "0.1.0"
+description: Real-world customer support inbox triage environment for OpenEnv.
+type: space
+runtime: fastapi
+app: server.app:app
+port: 7860
+entrypoint: uvicorn server.app:app --host 0.0.0.0 --port 7860
+action_model: support_inbox_env.models.SupportAction
+observation_model: support_inbox_env.models.SupportObservation
+reward_model: support_inbox_env.models.SupportReward
+tags:
+  - openenv
+  - customer-support
+  - rl
