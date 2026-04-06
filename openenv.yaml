@@ -1,0 +1,37 @@
+name: SupportAI-Env
+version: "1.0.0"
+description: >
+  Production-grade OpenEnv environment simulating real-world customer support workflows.
+  Hybrid deterministic (keyword intent) + LLM (tone detection) architecture.
+
+interface:
+  reset: "POST /reset"
+  step: "POST /step"
+  state: "GET /state"
+
+tasks:
+  - id: easy
+    name: Order Tracking
+    difficulty: easy
+    max_steps: 4
+  - id: medium
+    name: Refund Processing
+    difficulty: medium
+    max_steps: 6
+  - id: hard
+    name: Multi-Issue Complaint
+    difficulty: hard
+    max_steps: 8
+
+action_space:
+  - reply
+  - refund
+  - escalate
+  - ask_details
+
+reward_range: [-1.0, 1.0]
+score_range: [0.0, 1.0]
+
+deployment:
+  platform: huggingface-spaces
+  runtime: docker
