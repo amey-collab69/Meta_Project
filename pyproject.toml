@@ -27,6 +27,7 @@ classifiers = [
 ]
 
 dependencies = [
+    "openenv-core>=0.2.0",
     "fastapi>=0.111.0",
     "uvicorn[standard]>=0.29.0",
     "openai>=1.30.0",
@@ -52,6 +53,7 @@ Repository = "https://github.com/amey-collab69/Meta_Project"
 Documentation = "https://huggingface.co/spaces/sorf/supportai-env"
 
 [project.scripts]
+server = "main:app"
 supportai-server = "start_server:main"
 
 [tool.setuptools]
