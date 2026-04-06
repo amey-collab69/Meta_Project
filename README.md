@@ -1,3 +1,14 @@
+---
+title: TechmasterMeta
+emoji: "🚀"
+colorFrom: blue
+colorTo: green
+sdk: docker
+app_port: 7860
+pinned: false
+license: mit
+---
+
 # Support Inbox OpenEnv
 
 `support-inbox-openenv` is a real-world OpenEnv environment where an agent learns to triage customer support tickets. The agent must inspect a ticket, classify the issue, assign a priority, route it to the correct team, and choose whether to resolve or escalate the case with a helpful reply.
