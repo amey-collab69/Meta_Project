@@ -7,7 +7,7 @@
 
 ---
 
-## 🎯 **What Makes This KHATARNAK? 🔥**
+## 🎯 **What Makes This Best? 🔥**
 
 **SupportAI-Env** = **Production-grade AI support agent simulator** with a **drop-dead gorgeous dashboard** that turns boring RL training into a **command-center experience**.
 
@@ -166,7 +166,7 @@ done
 **Built with ❤️ for AI trainers who hate boring UIs**
 
 ```
-Made by BLACKBOXAI – Because good enough is never enough
+Made by Techmaster – Because good enough is never enough
 Version 2.0 – The dashboard that makes competitors cry
 ```
 
