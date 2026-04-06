@@ -11,11 +11,11 @@ license: mit
 
 # Support Inbox OpenEnv
 
-`support-inbox-openenv` is a real-world OpenEnv environment where an agent learns to triage customer support tickets. The agent must inspect a ticket, classify the issue, assign a priority, route it to the correct team, and choose whether to resolve or escalate the case with a helpful reply.
+`support-inbox-openenv` is a real-world OpenEnv environment where an agent learns to operate a customer support inbox. The agent must inspect a ticket, classify the issue, assign a priority, route it to the correct team, maintain internal workflow state, satisfy policy checkpoints, and choose whether to resolve or escalate the case with a helpful reply.
 
 The environment is deterministic and designed for hackathon-style evaluation:
 
-- 3 built-in tasks with easy, medium, and hard difficulty
+- 4 built-in tasks with easy, medium, and hard difficulty
 - Typed observation, action, reward, and response models
 - Partial-progress rewards across a full trajectory
 - Deterministic graders that return scores in the `0.0` to `1.0` range
@@ -31,8 +31,10 @@ This environment simulates a support operations workflow that humans perform eve
 2. Identify the intent.
 3. Set an appropriate priority.
 4. Route the case to the right team.
-5. Draft a response.
-6. Resolve or escalate the issue.
+5. Add internal notes and update the workflow status.
+6. Request more information when policy requires it.
+7. Draft a response.
+8. Take a safe operational action, then resolve or escalate.
 
 This makes the environment more realistic than a toy classification benchmark because the agent must produce a correct sequence of actions and avoid unsafe final decisions.
 
@@ -40,7 +42,7 @@ This makes the environment more realistic than a toy classification benchmark be
 
 The action model is `SupportAction` with the following fields:
 
-- `action_type`: one of `classify_intent`, `set_priority`, `assign_team`, `draft_reply`, `resolve`, `escalate`
+- `action_type`: one of `classify_intent`, `set_priority`, `assign_team`, `add_internal_note`, `request_more_info`, `change_status`, `draft_reply`, `apply_refund`, `resolve`, `escalate`
 - `value`: primary action value, such as `billing`, `urgent`, or `engineering`
 - `message`: optional free-text response or escalation note
 
@@ -61,6 +63,7 @@ The observation model is `SupportObservation` and includes:
 - the current ticket
 - current progress checklist
 - history of previous actions
+- internal notes and status history
 - remaining turn budget
 - available actions
 
@@ -77,10 +80,13 @@ Rewards are based on incremental progress toward the task rubric:
 - correct intent classification
 - correct priority
 - correct team assignment
+- correct internal note quality
+- correct workflow status transitions
 - useful reply quality
+- policy-safe behavior
 - correct final disposition
 
-Repeated or conflicting actions reduce incremental reward.
+Repeated, conflicting, or unsafe actions reduce incremental reward.
 
 ## Tasks
 
@@ -88,19 +94,25 @@ Repeated or conflicting actions reduce incremental reward.
 
 - Difficulty: easy
 - Scenario: customer requests a duplicate charge refund
-- Goal: classify as billing, route to billing, set normal priority, send a refund-oriented reply, resolve correctly
+- Goal: classify as billing, route to billing, set normal priority, add an internal note, move the ticket into investigation, apply the refund safely, send a refund-oriented reply, and resolve correctly
 
 ### `medium_outage_enterprise`
 
 - Difficulty: medium
 - Scenario: enterprise customer reports a production outage
-- Goal: classify as technical, assign urgent priority, route to engineering, send a careful incident reply, escalate instead of resolving
+- Goal: classify as technical, assign urgent priority, route to engineering, leave a sev1 internal note, move the case into investigation, send a careful incident reply, and escalate instead of resolving
 
 ### `hard_compliance_data_deletion`
 
 - Difficulty: hard
 - Scenario: customer requests data deletion with legal sensitivity
-- Goal: classify as compliance, assign high priority, route to legal, include identity-verification language in the reply, escalate for secure handling
+- Goal: classify as compliance, assign high priority, route to legal, add a GDPR-sensitive internal note, request identity verification, move the case to verification review, include identity-verification language in the reply, and escalate for secure handling
+
+### `hard_finance_chargeback_risk`
+
+- Difficulty: hard
+- Scenario: customer reports a potentially fraudulent card charge
+- Goal: classify as billing, route to risk, mark urgent priority, add an internal fraud note, request card verification details, avoid auto-refunding, and escalate for fraud review
 
 ## Project Layout
 
@@ -191,8 +203,7 @@ Because baseline scores depend on the selected external model endpoint, exact sc
 
 - `openenv.yaml` present
 - FastAPI app exposes `reset`, `step`, and `state`
-- 3 deterministic tasks with graders
+- 4 deterministic tasks with graders
 - `inference.py` at repo root
 - Dockerfile builds the environment
 - README documents setup, tasks, and action/observation spaces
-# TechmasterMeta

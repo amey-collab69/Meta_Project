@@ -65,6 +65,7 @@ def fallback_policy(observation: Dict[str, Any]) -> SupportAction:
             "easy_billing_refund": "billing",
             "medium_outage_enterprise": "technical",
             "hard_compliance_data_deletion": "compliance",
+            "hard_finance_chargeback_risk": "billing",
         }
         return SupportAction(action_type=ActionType.CLASSIFY_INTENT, value=mapping[task_id])
 
@@ -73,6 +74,7 @@ def fallback_policy(observation: Dict[str, Any]) -> SupportAction:
             "easy_billing_refund": "normal",
             "medium_outage_enterprise": "urgent",
             "hard_compliance_data_deletion": "high",
+            "hard_finance_chargeback_risk": "urgent",
         }
         return SupportAction(action_type=ActionType.SET_PRIORITY, value=mapping[task_id])
 
@@ -81,8 +83,45 @@ def fallback_policy(observation: Dict[str, Any]) -> SupportAction:
             "easy_billing_refund": "billing",
             "medium_outage_enterprise": "engineering",
             "hard_compliance_data_deletion": "legal",
+            "hard_finance_chargeback_risk": "risk",
         }
         return SupportAction(action_type=ActionType.ASSIGN_TEAM, value=mapping[task_id])
+
+    if not checklist["note_done"]:
+        messages = {
+            "easy_billing_refund": "Internal note: duplicate charge confirmed on renewal invoice.",
+            "medium_outage_enterprise": "Internal note: sev1 api outage affecting enterprise production traffic.",
+            "hard_compliance_data_deletion": "Internal note: gdpr deletion request pending identity verification.",
+            "hard_finance_chargeback_risk": "Internal note: possible fraud and unauthorized chargeback risk.",
+        }
+        return SupportAction(
+            action_type=ActionType.ADD_INTERNAL_NOTE,
+            value="internal_triage",
+            message=messages[task_id],
+        )
+
+    if not checklist["status_flow_done"]:
+        status_sequences = {
+            "easy_billing_refund": ["investigating"],
+            "medium_outage_enterprise": ["investigating"],
+            "hard_compliance_data_deletion": ["pending_verification"],
+            "hard_finance_chargeback_risk": ["investigating"],
+        }
+        history = observation["status_history"]
+        for status in status_sequences[task_id]:
+            if status not in history:
+                return SupportAction(action_type=ActionType.CHANGE_STATUS, value=status)
+
+    if not checklist["policy_done"] and task_id in {"hard_compliance_data_deletion", "hard_finance_chargeback_risk"}:
+        messages = {
+            "hard_compliance_data_deletion": "Please verify your identity with a government id so we can verify the deletion request.",
+            "hard_finance_chargeback_risk": "Please verify the last four digits of the card so we can investigate and verify the charge.",
+        }
+        return SupportAction(
+            action_type=ActionType.REQUEST_MORE_INFO,
+            value="verification_request",
+            message=messages[task_id],
+        )
 
     if not checklist["reply_done"]:
         messages = {
@@ -95,6 +134,9 @@ def fallback_policy(observation: Dict[str, Any]) -> SupportAction:
             "hard_compliance_data_deletion": (
                 "We can process the deletion request after we verify your identity and confirm the deletion workflow."
             ),
+            "hard_finance_chargeback_risk": (
+                "We will investigate the card activity, verify the details with you, and protect the account while we investigate."
+            ),
         }
         return SupportAction(
             action_type=ActionType.DRAFT_REPLY,
@@ -102,12 +144,16 @@ def fallback_policy(observation: Dict[str, Any]) -> SupportAction:
             message=messages[task_id],
         )
 
+    if task_id == "easy_billing_refund" and not checklist["policy_done"]:
+        return SupportAction(action_type=ActionType.APPLY_REFUND, value="19.99", message="Refund issued for duplicate renewal charge.")
+
     if task_id == "easy_billing_refund":
         return SupportAction(action_type=ActionType.RESOLVE, value="refund_started")
 
     escalate_values = {
         "medium_outage_enterprise": ("sev1_incident", "Production 500 outage affecting enterprise traffic."),
         "hard_compliance_data_deletion": ("privacy_review", "Privacy legal verification required before secure deletion."),
+        "hard_finance_chargeback_risk": ("fraud_review", "Fraud chargeback card investigation required immediately."),
     }
     value, message = escalate_values[task_id]
     return SupportAction(action_type=ActionType.ESCALATE, value=value, message=message)
