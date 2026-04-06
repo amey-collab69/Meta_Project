@@ -1,209 +1,46 @@
----
-title: TechmasterMeta
-emoji: "🚀"
-colorFrom: blue
-colorTo: green
-sdk: docker
-app_port: 7860
-pinned: false
-license: mit
----
+# SupportAI-Env
 
-# Support Inbox OpenEnv
+A production-grade OpenEnv environment for evaluating AI agents on customer support workflows.
 
-`support-inbox-openenv` is a real-world OpenEnv environment where an agent learns to operate a customer support inbox. The agent must inspect a ticket, classify the issue, assign a priority, route it to the correct team, maintain internal workflow state, satisfy policy checkpoints, and choose whether to resolve or escalate the case with a helpful reply.
+## Architecture
 
-The environment is deterministic and designed for hackathon-style evaluation:
+Hybrid system: deterministic keyword intent detection + LLM tone detection (OpenAI).
 
-- 4 built-in tasks with easy, medium, and hard difficulty
-- Typed observation, action, reward, and response models
-- Partial-progress rewards across a full trajectory
-- Deterministic graders that return scores in the `0.0` to `1.0` range
-- FastAPI server with `reset()`, `step()`, and `state()` endpoints
-- Root-level `inference.py` that uses the OpenAI client with OpenAI-compatible APIs
-- Dockerfile ready for Hugging Face Spaces
-
-## Environment Concept
-
-This environment simulates a support operations workflow that humans perform every day:
-
-1. Read an inbound customer ticket.
-2. Identify the intent.
-3. Set an appropriate priority.
-4. Route the case to the right team.
-5. Add internal notes and update the workflow status.
-6. Request more information when policy requires it.
-7. Draft a response.
-8. Take a safe operational action, then resolve or escalate.
-
-This makes the environment more realistic than a toy classification benchmark because the agent must produce a correct sequence of actions and avoid unsafe final decisions.
-
-## Action Space
-
-The action model is `SupportAction` with the following fields:
-
-- `action_type`: one of `classify_intent`, `set_priority`, `assign_team`, `add_internal_note`, `request_more_info`, `change_status`, `draft_reply`, `apply_refund`, `resolve`, `escalate`
-- `value`: primary action value, such as `billing`, `urgent`, or `engineering`
-- `message`: optional free-text response or escalation note
-
-Example:
-
-```json
-{
-  "action_type": "assign_team",
-  "value": "billing"
-}
-```
-
-## Observation Space
-
-The observation model is `SupportObservation` and includes:
-
-- task metadata
-- the current ticket
-- current progress checklist
-- history of previous actions
-- internal notes and status history
-- remaining turn budget
-- available actions
-
-## Reward Design
-
-The reward model is `SupportReward` with:
-
-- `value`: normalized step reward in `0.0` to `1.0`
-- `components`: per-criterion completion information
-- `reasoning`: short explanation of what changed this step
-
-Rewards are based on incremental progress toward the task rubric:
-
-- correct intent classification
-- correct priority
-- correct team assignment
-- correct internal note quality
-- correct workflow status transitions
-- useful reply quality
-- policy-safe behavior
-- correct final disposition
-
-Repeated, conflicting, or unsafe actions reduce incremental reward.
-
-## Tasks
-
-### `easy_billing_refund`
-
-- Difficulty: easy
-- Scenario: customer requests a duplicate charge refund
-- Goal: classify as billing, route to billing, set normal priority, add an internal note, move the ticket into investigation, apply the refund safely, send a refund-oriented reply, and resolve correctly
-
-### `medium_outage_enterprise`
-
-- Difficulty: medium
-- Scenario: enterprise customer reports a production outage
-- Goal: classify as technical, assign urgent priority, route to engineering, leave a sev1 internal note, move the case into investigation, send a careful incident reply, and escalate instead of resolving
-
-### `hard_compliance_data_deletion`
-
-- Difficulty: hard
-- Scenario: customer requests data deletion with legal sensitivity
-- Goal: classify as compliance, assign high priority, route to legal, add a GDPR-sensitive internal note, request identity verification, move the case to verification review, include identity-verification language in the reply, and escalate for secure handling
-
-### `hard_finance_chargeback_risk`
-
-- Difficulty: hard
-- Scenario: customer reports a potentially fraudulent card charge
-- Goal: classify as billing, route to risk, mark urgent priority, add an internal fraud note, request card verification details, avoid auto-refunding, and escalate for fraud review
-
-## Project Layout
-
-```text
-.
-├── Dockerfile
-├── inference.py
-├── openenv.yaml
-├── requirements.txt
-├── server/
-│   ├── __init__.py
-│   └── app.py
-└── support_inbox_env/
-    ├── __init__.py
-    ├── client.py
-    ├── environment.py
-    ├── graders.py
-    ├── models.py
-    └── tasks.py
-```
-
-## Local Setup
+## Quick Start
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn server.app:app --host 0.0.0.0 --port 7860
+export OPENAI_API_KEY=your_key   # optional, fallback works without it
+uvicorn main:app --host 0.0.0.0 --port 7860
 ```
 
-## API Usage
+Open http://localhost:7860 for the GUI.
 
-Reset the environment:
+## API
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/reset` | POST | Start new episode |
+| `/step` | POST | Send agent action |
+| `/state` | GET | Get current state |
+
+## Run Inference
 
 ```bash
-curl -X POST http://127.0.0.1:7860/reset
+python inference.py
 ```
-
-Take a step:
-
-```bash
-curl -X POST http://127.0.0.1:7860/step \
-  -H "Content-Type: application/json" \
-  -d '{"action_type":"classify_intent","value":"billing"}'
-```
-
-Inspect state:
-
-```bash
-curl http://127.0.0.1:7860/state
-```
-
-## Inference Script
-
-The root `inference.py` script uses the OpenAI Python client against any OpenAI-compatible endpoint.
-
-Expected environment variables:
-
-- `API_BASE_URL`
-- `MODEL_NAME`
-- `HF_TOKEN`
-
-Run:
-
-```bash
-API_BASE_URL="https://your-openai-compatible-endpoint/v1" \
-MODEL_NAME="your-model" \
-HF_TOKEN="your-token" \
-python3 inference.py
-```
-
-The script emits structured logs with `[START]`, `[STEP]`, and `[END]` tags for each task and prints a final average score.
 
 ## Docker
 
-Build and run:
-
 ```bash
-docker build -t support-inbox-openenv .
-docker run -p 7860:7860 support-inbox-openenv
+docker build -t supportai-env .
+docker run -p 7860:7860 -e OPENAI_API_KEY=your_key supportai-env
 ```
 
-## Baseline Notes
+## Tasks
 
-Because baseline scores depend on the selected external model endpoint, exact scores will vary. The included prompt and deterministic fallback parser are designed to produce stable action sequences when run with a temperature-minimized OpenAI-compatible model.
-
-## Submission Checklist
-
-- `openenv.yaml` present
-- FastAPI app exposes `reset`, `step`, and `state`
-- 4 deterministic tasks with graders
-- `inference.py` at repo root
-- Dockerfile builds the environment
-- README documents setup, tasks, and action/observation spaces
+| Task | Difficulty | Scenario |
+|---|---|---|
+| easy | Easy | Order tracking |
+| medium | Medium | Refund workflow |
+| hard | Hard | Multi-intent + angry customer |

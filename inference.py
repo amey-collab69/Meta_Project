@@ -1,242 +1,200 @@
-from __future__ import annotations
-
-import json
-import os
-import re
-from typing import Any, Dict, List
-
-from openai import OpenAI
-
-from support_inbox_env.environment import SupportInboxEnvironment
-from support_inbox_env.models import ActionType, SupportAction
-from support_inbox_env.tasks import TASKS
-
-
-SYSTEM_PROMPT = """You are a support-operations agent acting in a deterministic RL environment.
-Return exactly one JSON object with keys: action_type, value, message.
-Choose one of these action types only: classify_intent, set_priority, assign_team, add_internal_note, request_more_info, change_status, draft_reply, apply_refund, resolve, escalate.
-Do not include markdown fences or any extra text.
+"""
+SupportAI-Env — Inference Script
+Uses OpenAI API to run baseline agent across all 3 tasks.
+Output format (EXACT):
+[START] task=<id> env=support model=<model>
+[STEP] step=<n> action=<act> reward=<r> done=<bool> error=<null|msg>
+[END] success=<bool> steps=<n> score=<s> rewards=<r1,r2,...>
 """
 
-API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME = os.getenv("MODEL_NAME", "openai/gpt-oss-120b:fastest")
-HF_TOKEN = os.getenv("HF_TOKEN")
-LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
+import os
+import json
+from dotenv import load_dotenv
+load_dotenv()
+from openai import OpenAI
+from env import SupportEnv, Action
+from tasks import TASKS
+from grader import grade
+
+MODEL = os.getenv("OPENAI_MODEL", "gpt-3.5-turbo")
+VALID_ACTIONS = ["reply", "refund", "escalate", "ask_details"]
 
 
-def log_start(task_id: str, difficulty: str) -> None:
-    print(f"[START] task_id={task_id} difficulty={difficulty}")
-
-
-def log_step(task_id: str, step_index: int, action: SupportAction, reward: float, done: bool, score: float) -> None:
-    print(
-        "[STEP] "
-        f"task_id={task_id} step={step_index} action_type={action.action_type.value} "
-        f"value={json.dumps(action.value)} reward={reward:.4f} done={str(done).lower()} score={score:.4f}"
+def build_system_prompt() -> str:
+    return (
+        "You are an AI customer support agent operating inside SupportAI-Env. "
+        "Your job is to resolve customer issues by choosing the correct action at each step. "
+        "Available actions: reply, ask_details, refund, escalate. "
+        "Respond with ONLY a JSON object: {\"action\": \"<action>\", \"content\": \"<optional message>\"}. "
+        "No extra text. No markdown."
     )
 
 
-def log_end(task_id: str, final_score: float, steps: int) -> None:
-    print(f"[END] task_id={task_id} final_score={final_score:.4f} steps={steps}")
-
-
-def build_user_prompt(observation: Dict[str, Any]) -> str:
-    return json.dumps(
-        {
-            "objective": observation["objective"],
-            "ticket": observation["ticket"],
-            "checklist": observation["checklist"],
-            "history": observation["action_history"],
-            "remaining_turns": observation["remaining_turns"],
-            "guidance": observation["guidance"],
-        },
-        indent=2,
+def build_user_prompt(obs: dict, step: int) -> str:
+    return (
+        f"Step {step}. Current state: {obs['current_state']}. "
+        f"Customer message: \"{obs['customer_message']}\". "
+        f"Intent: {obs['intent']}. Tone: {obs['sentiment']}. "
+        f"History length: {len(obs['conversation_history'])}. "
+        "Choose the best action."
     )
 
 
-def parse_action(raw_text: str) -> Dict[str, Any]:
-    raw_text = raw_text.strip()
-    match = re.search(r"\{.*\}", raw_text, re.DOTALL)
-    candidate = match.group(0) if match else raw_text
-    return json.loads(candidate)
+def run_task(task_id: str, client: OpenAI) -> dict:
+    task = TASKS[task_id]
+    env = SupportEnv(task)
+    obs = env.reset()
 
+    rewards = []
+    step = 0
+    done = False
+    lines = []
 
-def fallback_policy(observation: Dict[str, Any]) -> SupportAction:
-    task_id = observation["task_id"]
-    checklist = observation["checklist"]
+    lines.append(f"[START] task={task_id} env=support model={MODEL}")
 
-    if not checklist["intent_done"]:
-        mapping = {
-            "easy_billing_refund": "billing",
-            "medium_outage_enterprise": "technical",
-            "hard_compliance_data_deletion": "compliance",
-            "hard_finance_chargeback_risk": "billing",
-        }
-        return SupportAction(action_type=ActionType.CLASSIFY_INTENT, value=mapping[task_id])
+    while not done and step < task.get("max_steps", 10):
+        step += 1
+        obs_dict = obs.model_dump()
 
-    if not checklist["priority_done"]:
-        mapping = {
-            "easy_billing_refund": "normal",
-            "medium_outage_enterprise": "urgent",
-            "hard_compliance_data_deletion": "high",
-            "hard_finance_chargeback_risk": "urgent",
-        }
-        return SupportAction(action_type=ActionType.SET_PRIORITY, value=mapping[task_id])
-
-    if not checklist["team_done"]:
-        mapping = {
-            "easy_billing_refund": "billing",
-            "medium_outage_enterprise": "engineering",
-            "hard_compliance_data_deletion": "legal",
-            "hard_finance_chargeback_risk": "risk",
-        }
-        return SupportAction(action_type=ActionType.ASSIGN_TEAM, value=mapping[task_id])
-
-    if not checklist["note_done"]:
-        messages = {
-            "easy_billing_refund": "Internal note: duplicate charge confirmed on renewal invoice.",
-            "medium_outage_enterprise": "Internal note: sev1 api outage affecting enterprise production traffic.",
-            "hard_compliance_data_deletion": "Internal note: gdpr deletion request pending identity verification.",
-            "hard_finance_chargeback_risk": "Internal note: possible fraud and unauthorized chargeback risk.",
-        }
-        return SupportAction(
-            action_type=ActionType.ADD_INTERNAL_NOTE,
-            value="internal_triage",
-            message=messages[task_id],
-        )
-
-    if not checklist["status_flow_done"]:
-        status_sequences = {
-            "easy_billing_refund": ["investigating"],
-            "medium_outage_enterprise": ["investigating"],
-            "hard_compliance_data_deletion": ["pending_verification"],
-            "hard_finance_chargeback_risk": ["investigating"],
-        }
-        history = observation["status_history"]
-        for status in status_sequences[task_id]:
-            if status not in history:
-                return SupportAction(action_type=ActionType.CHANGE_STATUS, value=status)
-
-    if not checklist["policy_done"] and task_id in {"hard_compliance_data_deletion", "hard_finance_chargeback_risk"}:
-        messages = {
-            "hard_compliance_data_deletion": "Please verify your identity with a government id so we can verify the deletion request.",
-            "hard_finance_chargeback_risk": "Please verify the last four digits of the card so we can investigate and verify the charge.",
-        }
-        return SupportAction(
-            action_type=ActionType.REQUEST_MORE_INFO,
-            value="verification_request",
-            message=messages[task_id],
-        )
-
-    if not checklist["reply_done"]:
-        messages = {
-            "easy_billing_refund": (
-                "We found the duplicate charge, started the refund, and will confirm once the duplicate amount is reversed."
-            ),
-            "medium_outage_enterprise": (
-                "We have opened an urgent incident with engineering and are treating this as a production incident."
-            ),
-            "hard_compliance_data_deletion": (
-                "We can process the deletion request after we verify your identity and confirm the deletion workflow."
-            ),
-            "hard_finance_chargeback_risk": (
-                "We will investigate the card activity, verify the details with you, and protect the account while we investigate."
-            ),
-        }
-        return SupportAction(
-            action_type=ActionType.DRAFT_REPLY,
-            value="customer_reply",
-            message=messages[task_id],
-        )
-
-    if task_id == "easy_billing_refund" and not checklist["policy_done"]:
-        return SupportAction(action_type=ActionType.APPLY_REFUND, value="19.99", message="Refund issued for duplicate renewal charge.")
-
-    if task_id == "easy_billing_refund":
-        return SupportAction(action_type=ActionType.RESOLVE, value="refund_started")
-
-    escalate_values = {
-        "medium_outage_enterprise": ("sev1_incident", "Production 500 outage affecting enterprise traffic."),
-        "hard_compliance_data_deletion": ("privacy_review", "Privacy legal verification required before secure deletion."),
-        "hard_finance_chargeback_risk": ("fraud_review", "Fraud chargeback card investigation required immediately."),
-    }
-    value, message = escalate_values[task_id]
-    return SupportAction(action_type=ActionType.ESCALATE, value=value, message=message)
-
-
-def call_model(client: OpenAI, model_name: str, observation: Dict[str, Any]) -> SupportAction:
-    response = client.chat.completions.create(
-        model=model_name,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": build_user_prompt(observation)},
-        ],
-        temperature=0,
-    )
-    content = response.choices[0].message.content or "{}"
-    parsed = parse_action(content)
-    return SupportAction.model_validate(parsed)
-
-
-def run() -> int:
-    request_timeout = float(os.getenv("MODEL_TIMEOUT_SECONDS", "8"))
-    client: OpenAI | None = None
-
-    if HF_TOKEN:
+        # LLM decides action (baseline agent)
         try:
-            client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN, timeout=request_timeout)
-        except Exception as exc:
-            print(f"[DEBUG] OpenAI client initialization failed: {exc}", flush=True)
-            client = None
-    else:
-        print("[DEBUG] HF_TOKEN not set, using deterministic fallback policy.", flush=True)
+            response = client.chat.completions.create(
+                model=MODEL,
+                messages=[
+                    {"role": "system", "content": build_system_prompt()},
+                    {"role": "user", "content": build_user_prompt(obs_dict, step)},
+                ],
+                max_tokens=80,
+                temperature=0,
+            )
+            raw = response.choices[0].message.content.strip()
+            parsed = json.loads(raw)
+            action_type = parsed.get("action", "reply")
+            content = parsed.get("content", "")
+            if action_type not in VALID_ACTIONS:
+                action_type = "reply"
+        except Exception as e:
+            action_type = "reply"
+            content = ""
 
-    env = SupportInboxEnvironment()
+        action = Action(action_type=action_type, content=content)
+        obs, reward, done, info = env.step(action)
+        rewards.append(reward)
 
-    task_scores: List[float] = []
+        error_val = info.get("error") or "null"
+        lines.append(
+            f"[STEP] step={step} action={action_type} "
+            f"reward={reward:.2f} done={str(done).lower()} error={error_val}"
+        )
 
-    for task in TASKS:
-        observation = env.reset(task.task_id).model_dump(mode="json")
-        log_start(task.task_id, task.difficulty.value)
+    # Grade
+    final_obs = env.state()
+    grade_result = grade(
+        task=task,
+        action_history=env._action_history,
+        total_reward=env.total_reward(),
+        final_state=final_obs.current_state,
+        step_count=final_obs.step_count,
+        intent_detected=final_obs.intent,
+        tone=final_obs.sentiment,
+    )
 
-        done = False
-        steps = 0
-        final_score = 0.0
+    success = grade_result["label"] in ("full", "partial")
+    score = grade_result["final_score"]
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
 
-        while not done and steps < task.max_turns:
-            try:
-                if client is None:
-                    raise RuntimeError("No model client available.")
-                action = call_model(client, MODEL_NAME, observation)
-            except Exception:
-                action = fallback_policy(observation)
+    lines.append(
+        f"[END] success={str(success).lower()} steps={step} "
+        f"score={score:.2f} rewards={rewards_str}"
+    )
 
-            try:
-                result = env.step(action)
-            except Exception as exc:
-                print(f"[DEBUG] env.step failed on task {task.task_id}: {exc}", flush=True)
-                fallback_action = fallback_policy(observation)
-                result = env.step(fallback_action)
-                action = fallback_action
+    return {
+        "task_id": task_id,
+        "lines": lines,
+        "grade": grade_result,
+        "success": success,
+    }
 
-            steps += 1
-            final_score = float(result.info["grader_score"])
-            log_step(task.task_id, steps, action, result.reward.value, result.done, final_score)
 
-            observation = result.observation.model_dump(mode="json")
-            done = result.done
+def main():
+    api_key = os.getenv("OPENAI_API_KEY", "")
+    if not api_key:
+        print("WARNING: OPENAI_API_KEY not set. Using fallback tone detection.")
 
-        log_end(task.task_id, final_score, steps)
-        task_scores.append(final_score)
+    client = OpenAI(api_key=api_key) if api_key else None
 
-    average_score = sum(task_scores) / len(task_scores)
-    print(f"[END] average_score={average_score:.4f} task_count={len(task_scores)}")
-    return 0
+    results = []
+    for task_id in ["easy", "medium", "hard"]:
+        print(f"\n{'='*50}")
+        if client:
+            result = run_task(task_id, client)
+        else:
+            # No API key: run with deterministic fallback (no LLM calls)
+            result = run_task_no_llm(task_id)
+
+        for line in result["lines"]:
+            print(line)
+        results.append(result)
+
+    print(f"\n{'='*50}")
+    print("SUMMARY")
+    for r in results:
+        g = r["grade"]
+        print(f"  {r['task_id']:8s} | score={g['final_score']} | label={g['label']} | steps={g['steps']}")
+
+
+def run_task_no_llm(task_id: str) -> dict:
+    """Deterministic fallback when no OpenAI key is available."""
+    task = TASKS[task_id]
+    env = SupportEnv(task)
+    obs = env.reset()
+
+    workflow = task.get("expected_workflow", ["reply"])
+    rewards = []
+    step = 0
+    done = False
+    lines = []
+
+    lines.append(f"[START] task={task_id} env=support model=deterministic-fallback")
+
+    wi = 0
+    while not done and step < task.get("max_steps", 10):
+        step += 1
+        action_type = workflow[wi] if wi < len(workflow) else "reply"
+        wi += 1
+
+        action = Action(action_type=action_type, content="")
+        obs, reward, done, info = env.step(action)
+        rewards.append(reward)
+
+        error_val = info.get("error") or "null"
+        lines.append(
+            f"[STEP] step={step} action={action_type} "
+            f"reward={reward:.2f} done={str(done).lower()} error={error_val}"
+        )
+
+    final_obs = env.state()
+    grade_result = grade(
+        task=task,
+        action_history=env._action_history,
+        total_reward=env.total_reward(),
+        final_state=final_obs.current_state,
+        step_count=final_obs.step_count,
+        intent_detected=final_obs.intent,
+        tone=final_obs.sentiment,
+    )
+
+    success = grade_result["label"] in ("full", "partial")
+    score = grade_result["final_score"]
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+
+    lines.append(
+        f"[END] success={str(success).lower()} steps={step} "
+        f"score={score:.2f} rewards={rewards_str}"
+    )
+
+    return {"task_id": task_id, "lines": lines, "grade": grade_result, "success": success}
 
 
 if __name__ == "__main__":
-    try:
-        raise SystemExit(run())
-    except Exception as exc:
-        print(f"[END] status=error message={json.dumps(str(exc))}")
-        raise SystemExit(1)
+    main()
