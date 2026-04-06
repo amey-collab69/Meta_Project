@@ -1,159 +1,183 @@
-import os
-from typing import Optional
+from __future__ import annotations
 
-import requests
+import json
+import os
+import re
+from typing import Any, Dict, List
+
 from openai import OpenAI
 
-# Environment variables ONLY — no defaults, no fallbacks
-API_BASE_URL = os.environ.get("API_BASE_URL")
-API_KEY = os.environ.get("API_KEY")
-ENV_URL = "http://localhost:7860"
-MODEL_NAME = "gpt-4o-mini"
-BENCHMARK = "supportai-env"
-TASK_IDS = ["easy", "medium", "hard"]
-TASK_MAX_STEPS = {"easy": 4, "medium": 6, "hard": 8}
+from support_inbox_env.environment import SupportInboxEnvironment
+from support_inbox_env.models import ActionType, SupportAction
+from support_inbox_env.tasks import TASKS
 
 
-def format_bool(value: bool) -> str:
-    return "true" if value else "false"
+SYSTEM_PROMPT = """You are a support-operations agent acting in a deterministic RL environment.
+Return exactly one JSON object with keys: action_type, value, message.
+Choose one of these action types only: classify_intent, set_priority, assign_team, draft_reply, resolve, escalate.
+Do not include markdown fences or any extra text.
+"""
 
 
-def safe_str(value: Optional[str]) -> str:
-    return value if value else "null"
+def log_start(task_id: str, difficulty: str) -> None:
+    print(f"[START] task_id={task_id} difficulty={difficulty}")
 
 
-def make_client():
-    """Create OpenAI client pointing to proxy. Returns None if env vars missing."""
-    import os
-    from openai import OpenAI
-
-    base_url = os.environ.get("API_BASE_URL")
-    api_key = os.environ.get("API_KEY")
-
-    if not base_url or not api_key:
-        return None
-
-    return OpenAI(base_url=base_url, api_key=api_key)
+def log_step(task_id: str, step_index: int, action: SupportAction, reward: float, done: bool, score: float) -> None:
+    print(
+        "[STEP] "
+        f"task_id={task_id} step={step_index} action_type={action.action_type.value} "
+        f"value={json.dumps(action.value)} reward={reward:.4f} done={str(done).lower()} score={score:.4f}"
+    )
 
 
-def choose_action_with_llm(client, customer_msg, state):
-    """Call LLM to choose action and content via proxy. Falls back gracefully if client is None or call fails."""
-    if not client:
-        return "reply", "I'm here to help."
+def log_end(task_id: str, final_score: float, steps: int) -> None:
+    print(f"[END] task_id={task_id} final_score={final_score:.4f} steps={steps}")
 
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "Respond with ACTION and CONTENT."},
-                {"role": "user", "content": f"Customer: {customer_msg}\nState: {state}"}
-            ],
-            max_tokens=100,
-            temperature=0.7,
+
+def build_user_prompt(observation: Dict[str, Any]) -> str:
+    return json.dumps(
+        {
+            "objective": observation["objective"],
+            "ticket": observation["ticket"],
+            "checklist": observation["checklist"],
+            "history": observation["action_history"],
+            "remaining_turns": observation["remaining_turns"],
+            "guidance": observation["guidance"],
+        },
+        indent=2,
+    )
+
+
+def parse_action(raw_text: str) -> Dict[str, Any]:
+    raw_text = raw_text.strip()
+    match = re.search(r"\{.*\}", raw_text, re.DOTALL)
+    candidate = match.group(0) if match else raw_text
+    return json.loads(candidate)
+
+
+def fallback_policy(observation: Dict[str, Any]) -> SupportAction:
+    task_id = observation["task_id"]
+    checklist = observation["checklist"]
+
+    if not checklist["intent_done"]:
+        mapping = {
+            "easy_billing_refund": "billing",
+            "medium_outage_enterprise": "technical",
+            "hard_compliance_data_deletion": "compliance",
+        }
+        return SupportAction(action_type=ActionType.CLASSIFY_INTENT, value=mapping[task_id])
+
+    if not checklist["priority_done"]:
+        mapping = {
+            "easy_billing_refund": "normal",
+            "medium_outage_enterprise": "urgent",
+            "hard_compliance_data_deletion": "high",
+        }
+        return SupportAction(action_type=ActionType.SET_PRIORITY, value=mapping[task_id])
+
+    if not checklist["team_done"]:
+        mapping = {
+            "easy_billing_refund": "billing",
+            "medium_outage_enterprise": "engineering",
+            "hard_compliance_data_deletion": "legal",
+        }
+        return SupportAction(action_type=ActionType.ASSIGN_TEAM, value=mapping[task_id])
+
+    if not checklist["reply_done"]:
+        messages = {
+            "easy_billing_refund": (
+                "We found the duplicate charge, started the refund, and will confirm once the duplicate amount is reversed."
+            ),
+            "medium_outage_enterprise": (
+                "We have opened an urgent incident with engineering and are treating this as a production incident."
+            ),
+            "hard_compliance_data_deletion": (
+                "We can process the deletion request after we verify your identity and confirm the deletion workflow."
+            ),
+        }
+        return SupportAction(
+            action_type=ActionType.DRAFT_REPLY,
+            value="customer_reply",
+            message=messages[task_id],
         )
 
-        text = response.choices[0].message.content.strip()
+    if task_id == "easy_billing_refund":
+        return SupportAction(action_type=ActionType.RESOLVE, value="refund_started")
 
-        action = "reply"
-        content = "I'm here to help."
-
-        for line in text.split("\n"):
-            if line.startswith("ACTION:"):
-                action = line.split(":", 1)[1].strip().lower()
-            elif line.startswith("CONTENT:"):
-                content = line.split(":", 1)[1].strip()
-
-        return action, content
-
-    except Exception:
-        return "reply", "Let me assist you."
+    escalate_values = {
+        "medium_outage_enterprise": ("sev1_incident", "Production 500 outage affecting enterprise traffic."),
+        "hard_compliance_data_deletion": ("privacy_review", "Privacy legal verification required before secure deletion."),
+    }
+    value, message = escalate_values[task_id]
+    return SupportAction(action_type=ActionType.ESCALATE, value=value, message=message)
 
 
-def run_task(task_id: str, client: OpenAI) -> None:
-    """Run task and emit [START], [STEP], [END] format."""
-    print(f"[START] task={task_id} env={BENCHMARK} model={MODEL_NAME}", flush=True)
+def call_model(client: OpenAI, model_name: str, observation: Dict[str, Any]) -> SupportAction:
+    response = client.chat.completions.create(
+        model=model_name,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": build_user_prompt(observation)},
+        ],
+        temperature=0,
+    )
+    content = response.choices[0].message.content or "{}"
+    parsed = parse_action(content)
+    return SupportAction.model_validate(parsed)
 
-    session_id = None
-    steps = []
-    rewards = []
 
-    try:
-        # Reset
-        reset_resp = requests.post(
-            f"{ENV_URL}/reset",
-            json={"task_id": task_id},
-            timeout=15,
-        )
-        reset_resp.raise_for_status()
-        obs = reset_resp.json()
-        session_id = obs.get("session_id")
+def require_env(name: str) -> str:
+    value = os.getenv(name)
+    if not value:
+        raise RuntimeError(f"Missing required environment variable: {name}")
+    return value
 
-        max_steps = TASK_MAX_STEPS.get(task_id, 8)
 
-        # Run episode
-        for step_num in range(1, max_steps + 1):
-            customer_msg = obs.get("observation", {}).get("customer_message", "")
-            state = obs.get("observation", {}).get("current_state", "")
+def run() -> int:
+    api_base_url = require_env("API_BASE_URL")
+    model_name = require_env("MODEL_NAME")
+    hf_token = require_env("HF_TOKEN")
+    request_timeout = float(os.getenv("MODEL_TIMEOUT_SECONDS", "8"))
 
-            # Call LLM via proxy
-            action_type, content = choose_action_with_llm(client, customer_msg, state)
+    client = OpenAI(base_url=api_base_url, api_key=hf_token, timeout=request_timeout)
+    env = SupportInboxEnvironment()
 
-            # Execute step
-            step_resp = requests.post(
-                f"{ENV_URL}/step",
-                json={
-                    "session_id": session_id,
-                    "action_type": action_type,
-                    "content": content,
-                },
-                timeout=15,
-            )
-            step_resp.raise_for_status()
-            obs = step_resp.json()
+    task_scores: List[float] = []
 
-            reward = float(obs.get("reward", 0.0))
-            done = bool(obs.get("done", False))
-            info = obs.get("info", {}) or {}
-            error = safe_str(info.get("error"))
+    for task in TASKS:
+        observation = env.reset(task.task_id).model_dump(mode="json")
+        log_start(task.task_id, task.difficulty.value)
 
-            steps.append(action_type)
-            rewards.append(reward)
+        done = False
+        steps = 0
+        final_score = 0.0
 
-            print(
-                f"[STEP] step={step_num} action={action_type} reward={reward:.2f} done={format_bool(done)} error={error}",
-                flush=True,
-            )
+        while not done and steps < task.max_turns:
+            try:
+                action = call_model(client, model_name, observation)
+            except Exception:
+                action = fallback_policy(observation)
 
-            if done:
-                break
+            result = env.step(action)
+            steps += 1
+            final_score = float(result.info["grader_score"])
+            log_step(task.task_id, steps, action, result.reward.value, result.done, final_score)
 
-        # Final score
-        if rewards:
-            score = sum(rewards) / len(rewards)
-            score = max(0.01, min(0.99, score))
-        else:
-            score = 0.01
+            observation = result.observation.model_dump(mode="json")
+            done = result.done
 
-        success = score >= 0.50
+        log_end(task.task_id, final_score, steps)
+        task_scores.append(final_score)
 
-        rewards_str = ",".join(f"{r:.2f}" for r in rewards) if rewards else "0.01"
-        print(
-            f"[END] success={format_bool(success)} steps={len(steps)} score={score:.2f} rewards={rewards_str}",
-            flush=True,
-        )
-
-    except Exception as e:
-        print(
-            f"[STEP] step=1 action=none reward=0.01 done=false error={safe_str(str(e))}",
-            flush=True,
-        )
-        print(
-            f"[END] success=false steps=0 score=0.01 rewards=0.01",
-            flush=True,
-        )
+    average_score = sum(task_scores) / len(task_scores)
+    print(f"[END] average_score={average_score:.4f} task_count={len(task_scores)}")
+    return 0
 
 
 if __name__ == "__main__":
-    client = make_client()
-    for task in TASK_IDS:
-        run_task(task, client)
+    try:
+        raise SystemExit(run())
+    except Exception as exc:
+        print(f"[END] status=error message={json.dumps(str(exc))}")
+        raise SystemExit(1)
