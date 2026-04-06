@@ -1,8 +1,9 @@
 name: SupportAI-Env
-version: "1.0.0"
+version: "3.0.0"
 description: >
   Production-grade OpenEnv environment simulating real-world customer support workflows.
-  Hybrid deterministic (keyword intent) + LLM (tone detection) architecture.
+  Features hybrid deterministic (keyword intent) + LLM (tone detection) architecture,
+  database persistence, authentication, analytics, and advanced grading.
 
 interface:
   reset: "POST /reset"
@@ -14,24 +15,70 @@ tasks:
     name: Order Tracking
     difficulty: easy
     max_steps: 4
+    description: Simple order status inquiry with neutral customer tone
   - id: medium
     name: Refund Processing
     difficulty: medium
     max_steps: 6
+    description: Multi-step refund workflow with complaint handling
   - id: hard
     name: Multi-Issue Complaint
     difficulty: hard
     max_steps: 8
+    description: Complex angry customer with multiple issues requiring de-escalation
 
 action_space:
   - reply
+  - ask_details
   - refund
   - escalate
-  - ask_details
+
+observation_space:
+  type: dict
+  properties:
+    customer_message: string
+    current_state: string
+    intent: string
+    sentiment: string
+    step_count: integer
+    conversation_history: array
 
 reward_range: [-1.0, 1.0]
 score_range: [0.0, 1.0]
 
+features:
+  - Deterministic intent detection
+  - LLM-based tone analysis
+  - Multi-step workflows
+  - Real-time grading
+  - Database persistence
+  - User authentication
+  - Analytics & leaderboards
+  - WebSocket updates
+
 deployment:
   platform: huggingface-spaces
   runtime: docker
+  port: 7860
+
+api_endpoints:
+  - POST /reset - Start new session
+  - POST /step - Execute action
+  - GET /state - Get current state
+  - POST /custom_reset - Custom scenario
+  - GET /sessions - List sessions
+  - GET /health - Health check
+  - GET /metrics - System metrics
+  - GET /task_catalog - Task metadata
+
+dependencies:
+  - fastapi>=0.111.0
+  - uvicorn>=0.29.0
+  - openai>=1.30.0
+  - pydantic>=2.0.0
+  - python-multipart>=0.0.9
+
+authors:
+  - name: SupportAI Team
+    
+license: MIT
