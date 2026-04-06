@@ -1,3 +1,1 @@
-"""
-SupportAI-Env Server Package
-"""
+# Server package marker.

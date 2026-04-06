@@ -1,122 +1,186 @@
----
-title: SupportAI-Env
-emoji: 🤖
-colorFrom: blue
-colorTo: purple
-sdk: docker
-app_file: main.py
-pinned: false
----
+# Support Inbox OpenEnv
 
-# 🚀 SupportAI-Env
+`support-inbox-openenv` is a real-world OpenEnv environment where an agent learns to triage customer support tickets. The agent must inspect a ticket, classify the issue, assign a priority, route it to the correct team, and choose whether to resolve or escalate the case with a helpful reply.
 
-Production-grade OpenEnv environment for customer support AI training with real-time dashboard, advanced grading, and multi-task workflows.
+The environment is deterministic and designed for hackathon-style evaluation:
 
-## Features
+- 3 built-in tasks with easy, medium, and hard difficulty
+- Typed observation, action, reward, and response models
+- Partial-progress rewards across a full trajectory
+- Deterministic graders that return scores in the `0.0` to `1.0` range
+- FastAPI server with `reset()`, `step()`, and `state()` endpoints
+- Root-level `inference.py` that uses the OpenAI client with OpenAI-compatible APIs
+- Dockerfile ready for Hugging Face Spaces
 
-- **Multi-Task Training**: Easy, Medium, and Hard difficulty levels
-- **Real-Time Dashboard**: Live metrics, conversation tracking, and visual workflow timeline
-- **Advanced Grading**: Weighted scoring with detailed feedback
-- **Database Persistence**: SQLite-based session and user management
-- **Authentication**: Token-based user authentication and rate limiting
-- **Analytics**: Performance trends, leaderboards, and data export
-- **WebSocket Updates**: Real-time state synchronization
-- **Custom Scenarios**: Dynamic task generation from user input
+## Environment Concept
 
-## Quick Start
+This environment simulates a support operations workflow that humans perform every day:
 
-```bash
-# Install dependencies
-pip install -r requirements.txt
+1. Read an inbound customer ticket.
+2. Identify the intent.
+3. Set an appropriate priority.
+4. Route the case to the right team.
+5. Draft a response.
+6. Resolve or escalate the issue.
 
-# Start server
-python start_server.py
-
-# Access dashboard
-http://localhost:7860
-```
-
-## API Endpoints
-
-### Core Endpoints
-- `POST /reset` - Start new session
-- `POST /step` - Execute action
-- `GET /state` - Get current state
-- `POST /custom_reset` - Custom scenario
-
-### Authentication
-- `POST /auth/register` - Register user
-- `POST /auth/login` - Login user
-
-### Analytics
-- `GET /analytics/user` - User performance
-- `GET /analytics/task/{id}` - Task statistics
-- `GET /analytics/leaderboard` - Global rankings
-
-### Monitoring
-- `GET /health` - Health check
-- `GET /metrics` - System metrics
-- `GET /docs` - API documentation
-
-## Task Levels
-
-| Level | Scenario | Max Steps | Description |
-|-------|----------|-----------|-------------|
-| Easy | Order Status | 4 | Simple inquiry with neutral tone |
-| Medium | Refund Processing | 6 | Multi-step workflow with complaints |
-| Hard | Multi-Issue Complaint | 8 | Complex angry customer scenario |
+This makes the environment more realistic than a toy classification benchmark because the agent must produce a correct sequence of actions and avoid unsafe final decisions.
 
 ## Action Space
 
-- `reply` - Send response to customer
-- `ask_details` - Request more information
-- `refund` - Process refund
-- `escalate` - Escalate to supervisor
+The action model is `SupportAction` with the following fields:
 
-## Deployment
+- `action_type`: one of `classify_intent`, `set_priority`, `assign_team`, `draft_reply`, `resolve`, `escalate`
+- `value`: primary action value, such as `billing`, `urgent`, or `engineering`
+- `message`: optional free-text response or escalation note
 
-### Docker
-```bash
-docker build -t supportai-env .
-docker run -p 7860:7860 supportai-env
+Example:
+
+```json
+{
+  "action_type": "assign_team",
+  "value": "billing"
+}
 ```
 
-### Hugging Face Spaces
-This project is configured for deployment on Hugging Face Spaces with Docker runtime.
+## Observation Space
 
-## Baseline Inference
-Run the baseline agent with:
-```bash
-API_BASE_URL=http://localhost:7860 MODEL_NAME=gpt-3.5-turbo HF_TOKEN=<your-key> python inference.py
+The observation model is `SupportObservation` and includes:
+
+- task metadata
+- the current ticket
+- current progress checklist
+- history of previous actions
+- remaining turn budget
+- available actions
+
+## Reward Design
+
+The reward model is `SupportReward` with:
+
+- `value`: normalized step reward in `0.0` to `1.0`
+- `components`: per-criterion completion information
+- `reasoning`: short explanation of what changed this step
+
+Rewards are based on incremental progress toward the task rubric:
+
+- correct intent classification
+- correct priority
+- correct team assignment
+- useful reply quality
+- correct final disposition
+
+Repeated or conflicting actions reduce incremental reward.
+
+## Tasks
+
+### `easy_billing_refund`
+
+- Difficulty: easy
+- Scenario: customer requests a duplicate charge refund
+- Goal: classify as billing, route to billing, set normal priority, send a refund-oriented reply, resolve correctly
+
+### `medium_outage_enterprise`
+
+- Difficulty: medium
+- Scenario: enterprise customer reports a production outage
+- Goal: classify as technical, assign urgent priority, route to engineering, send a careful incident reply, escalate instead of resolving
+
+### `hard_compliance_data_deletion`
+
+- Difficulty: hard
+- Scenario: customer requests data deletion with legal sensitivity
+- Goal: classify as compliance, assign high priority, route to legal, include identity-verification language in the reply, escalate for secure handling
+
+## Project Layout
+
+```text
+.
+├── Dockerfile
+├── inference.py
+├── openenv.yaml
+├── requirements.txt
+├── server/
+│   ├── __init__.py
+│   └── app.py
+└── support_inbox_env/
+    ├── __init__.py
+    ├── client.py
+    ├── environment.py
+    ├── graders.py
+    ├── models.py
+    └── tasks.py
 ```
 
-The baseline script executes the three benchmark tasks (`easy`, `medium`, `hard`) and emits structured stdout logs in the required `[START]`, `[STEP]`, `[END]` format.
+## Local Setup
 
-## Environment Variables
-- `API_BASE_URL` — endpoint for the environment or OpenAI proxy
-- `MODEL_NAME` — model to use for inference
-- `HF_TOKEN` — Hugging Face/OpenAI API key used by `openai.OpenAI`
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn server.app:app --host 0.0.0.0 --port 7860
+```
 
-## Tech Stack
+## API Usage
 
-- **Backend**: FastAPI + Uvicorn
-- **Database**: SQLite with thread-safe operations
-- **AI**: OpenAI GPT for tone detection
-- **Frontend**: Vanilla JavaScript with WebSocket
-- **Deployment**: Docker + Hugging Face Spaces
+Reset the environment:
 
-## OpenEnv Compliance
+```bash
+curl -X POST http://127.0.0.1:7860/reset
+```
 
-This environment follows OpenEnv standards:
-- Structured API endpoints (`/reset`, `/step`, `/state`)
-- Deterministic grading system
-- Reproducible results
-- Standard observation/action/reward interface
+Take a step:
 
-## License
+```bash
+curl -X POST http://127.0.0.1:7860/step \
+  -H "Content-Type: application/json" \
+  -d '{"action_type":"classify_intent","value":"billing"}'
+```
 
-MIT
+Inspect state:
 
----
+```bash
+curl http://127.0.0.1:7860/state
+```
 
-**Version 3.0.0** | Built for AI trainers and researchers
+## Inference Script
+
+The root `inference.py` script uses the OpenAI Python client against any OpenAI-compatible endpoint.
+
+Expected environment variables:
+
+- `API_BASE_URL`
+- `MODEL_NAME`
+- `HF_TOKEN`
+
+Run:
+
+```bash
+API_BASE_URL="https://your-openai-compatible-endpoint/v1" \
+MODEL_NAME="your-model" \
+HF_TOKEN="your-token" \
+python3 inference.py
+```
+
+The script emits structured logs with `[START]`, `[STEP]`, and `[END]` tags for each task and prints a final average score.
+
+## Docker
+
+Build and run:
+
+```bash
+docker build -t support-inbox-openenv .
+docker run -p 7860:7860 support-inbox-openenv
+```
+
+## Baseline Notes
+
+Because baseline scores depend on the selected external model endpoint, exact scores will vary. The included prompt and deterministic fallback parser are designed to produce stable action sequences when run with a temperature-minimized OpenAI-compatible model.
+
+## Submission Checklist
+
+- `openenv.yaml` present
+- FastAPI app exposes `reset`, `step`, and `state`
+- 3 deterministic tasks with graders
+- `inference.py` at repo root
+- Dockerfile builds the environment
+- README documents setup, tasks, and action/observation spaces
