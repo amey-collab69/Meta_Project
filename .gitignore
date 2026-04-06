@@ -3,15 +3,3 @@ __pycache__/
 *.pyc
 *.pyo
 .DS_Store
-
-# Database files (regenerated automatically)
-*.db
-
-# Documentation artifacts
-kiro.md
-ENHANCEMENT_SUMMARY.txt
-IMPROVEMENTS.md
-TODO.md
-
-# Test files
-test_*.py
