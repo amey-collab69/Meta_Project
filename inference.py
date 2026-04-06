@@ -1,200 +1,156 @@
 """
-SupportAI-Env — Inference Script
-Uses OpenAI API to run baseline agent across all 3 tasks.
-Output format (EXACT):
-[START] task=<id> env=support model=<model>
-[STEP] step=<n> action=<act> reward=<r> done=<bool> error=<null|msg>
-[END] success=<bool> steps=<n> score=<s> rewards=<r1,r2,...>
+SupportAI-Env — Inference Script for OpenEnv Validation
+This script demonstrates how to interact with the environment via API endpoints.
 """
 
-import os
+import requests
 import json
-from dotenv import load_dotenv
-load_dotenv()
-from openai import OpenAI
-from env import SupportEnv, Action
-from tasks import TASKS
-from grader import grade
+import time
 
-MODEL = os.getenv("OPENAI_MODEL", "gpt-3.5-turbo")
-VALID_ACTIONS = ["reply", "refund", "escalate", "ask_details"]
+BASE_URL = "http://localhost:7860"
 
+def run_inference():
+    """Run a sample inference session through the API."""
+    print("=" * 60)
+    print("SupportAI-Env Inference Script")
+    print("=" * 60)
+    
+    try:
+        # Step 1: Reset environment
+        print("\n[1] Resetting environment...")
+        reset_response = requests.post(f"{BASE_URL}/reset", json={})
+        reset_data = reset_response.json()
+        
+        session_id = reset_data.get("session_id")
+        task = reset_data.get("task")
+        observation = reset_data.get("observation", {})
+        
+        print(f"✓ Session ID: {session_id}")
+        print(f"✓ Task: {task}")
+        print(f"✓ Initial State: {observation.get('current_state')}")
+        print(f"✓ Customer Message: {observation.get('customer_message')}")
+        print(f"✓ Intent: {observation.get('intent')}")
+        print(f"✓ Sentiment: {observation.get('sentiment')}")
+        
+        # Step 2: Send first action
+        print("\n[2] Sending action: ask_details...")
+        step_payload = {
+            "session_id": session_id,
+            "action_type": "ask_details",
+            "content": "Could you please provide your order number?"
+        }
+        step_response = requests.post(f"{BASE_URL}/step", json=step_payload)
+        step_data = step_response.json()
+        
+        observation = step_data.get("observation", {})
+        reward = step_data.get("reward", 0)
+        done = step_data.get("done", False)
+        
+        print(f"✓ Reward: {reward}")
+        print(f"✓ Done: {done}")
+        print(f"✓ Current State: {observation.get('current_state')}")
+        print(f"✓ Step Count: {observation.get('step_count')}")
+        
+        # Step 3: Send second action if not done
+        if not done:
+            print("\n[3] Sending action: reply...")
+            step_payload = {
+                "session_id": session_id,
+                "action_type": "reply",
+                "content": "I've checked your order status. It's on the way!"
+            }
+            step_response = requests.post(f"{BASE_URL}/step", json=step_payload)
+            step_data = step_response.json()
+            
+            observation = step_data.get("observation", {})
+            reward = step_data.get("reward", 0)
+            done = step_data.get("done", False)
+            
+            print(f"✓ Reward: {reward}")
+            print(f"✓ Done: {done}")
+            print(f"✓ Current State: {observation.get('current_state')}")
+            
+            # Check if we have a grade
+            if done and "grade" in step_data:
+                grade = step_data["grade"]
+                print(f"\n[GRADE]")
+                print(f"✓ Score: {grade.get('final_score')}")
+                print(f"✓ Label: {grade.get('label')}")
+                print(f"✓ Assessment: {grade.get('assessment', 'N/A')}")
+        
+        print("\n" + "=" * 60)
+        print("Inference completed successfully!")
+        print("=" * 60)
+        
+    except requests.exceptions.ConnectionError:
+        print("✗ Error: Could not connect to server at", BASE_URL)
+        print("  Make sure the server is running: python start_server.py")
+    except Exception as e:
+        print(f"✗ Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
 
-def build_system_prompt() -> str:
-    return (
-        "You are an AI customer support agent operating inside SupportAI-Env. "
-        "Your job is to resolve customer issues by choosing the correct action at each step. "
-        "Available actions: reply, ask_details, refund, escalate. "
-        "Respond with ONLY a JSON object: {\"action\": \"<action>\", \"content\": \"<optional message>\"}. "
-        "No extra text. No markdown."
-    )
-
-
-def build_user_prompt(obs: dict, step: int) -> str:
-    return (
-        f"Step {step}. Current state: {obs['current_state']}. "
-        f"Customer message: \"{obs['customer_message']}\". "
-        f"Intent: {obs['intent']}. Tone: {obs['sentiment']}. "
-        f"History length: {len(obs['conversation_history'])}. "
-        "Choose the best action."
-    )
-
-
-def run_task(task_id: str, client: OpenAI) -> dict:
-    task = TASKS[task_id]
-    env = SupportEnv(task)
-    obs = env.reset()
-
-    rewards = []
-    step = 0
-    done = False
-    lines = []
-
-    lines.append(f"[START] task={task_id} env=support model={MODEL}")
-
-    while not done and step < task.get("max_steps", 10):
-        step += 1
-        obs_dict = obs.model_dump()
-
-        # LLM decides action (baseline agent)
+def run_all_tasks():
+    """Run inference on all available tasks."""
+    tasks = ["easy", "medium", "hard"]
+    
+    print("=" * 60)
+    print("Running inference on all tasks")
+    print("=" * 60)
+    
+    for task_id in tasks:
+        print(f"\n{'='*60}")
+        print(f"Task: {task_id.upper()}")
+        print(f"{'='*60}")
+        
         try:
-            response = client.chat.completions.create(
-                model=MODEL,
-                messages=[
-                    {"role": "system", "content": build_system_prompt()},
-                    {"role": "user", "content": build_user_prompt(obs_dict, step)},
-                ],
-                max_tokens=80,
-                temperature=0,
+            # Reset with specific task
+            reset_response = requests.post(
+                f"{BASE_URL}/reset",
+                json={"task_id": task_id}
             )
-            raw = response.choices[0].message.content.strip()
-            parsed = json.loads(raw)
-            action_type = parsed.get("action", "reply")
-            content = parsed.get("content", "")
-            if action_type not in VALID_ACTIONS:
-                action_type = "reply"
+            reset_data = reset_response.json()
+            session_id = reset_data.get("session_id")
+            
+            print(f"Session: {session_id}")
+            print(f"Message: {reset_data.get('observation', {}).get('customer_message')}")
+            
+            # Simple action sequence
+            actions = ["ask_details", "reply"]
+            
+            for i, action_type in enumerate(actions, 1):
+                step_payload = {
+                    "session_id": session_id,
+                    "action_type": action_type,
+                    "content": f"Action {i}"
+                }
+                step_response = requests.post(f"{BASE_URL}/step", json=step_payload)
+                step_data = step_response.json()
+                
+                done = step_data.get("done", False)
+                reward = step_data.get("reward", 0)
+                
+                print(f"  Step {i}: {action_type} | Reward: {reward:.2f} | Done: {done}")
+                
+                if done:
+                    if "grade" in step_data:
+                        grade = step_data["grade"]
+                        print(f"  Grade: {grade.get('final_score')} ({grade.get('label')})")
+                    break
+            
+            time.sleep(0.5)  # Brief pause between tasks
+            
         except Exception as e:
-            action_type = "reply"
-            content = ""
-
-        action = Action(action_type=action_type, content=content)
-        obs, reward, done, info = env.step(action)
-        rewards.append(reward)
-
-        error_val = info.get("error") or "null"
-        lines.append(
-            f"[STEP] step={step} action={action_type} "
-            f"reward={reward:.2f} done={str(done).lower()} error={error_val}"
-        )
-
-    # Grade
-    final_obs = env.state()
-    grade_result = grade(
-        task=task,
-        action_history=env._action_history,
-        total_reward=env.total_reward(),
-        final_state=final_obs.current_state,
-        step_count=final_obs.step_count,
-        intent_detected=final_obs.intent,
-        tone=final_obs.sentiment,
-    )
-
-    success = grade_result["label"] in ("full", "partial")
-    score = grade_result["final_score"]
-    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
-
-    lines.append(
-        f"[END] success={str(success).lower()} steps={step} "
-        f"score={score:.2f} rewards={rewards_str}"
-    )
-
-    return {
-        "task_id": task_id,
-        "lines": lines,
-        "grade": grade_result,
-        "success": success,
-    }
-
-
-def main():
-    api_key = os.getenv("OPENAI_API_KEY", "")
-    if not api_key:
-        print("WARNING: OPENAI_API_KEY not set. Using fallback tone detection.")
-
-    client = OpenAI(api_key=api_key) if api_key else None
-
-    results = []
-    for task_id in ["easy", "medium", "hard"]:
-        print(f"\n{'='*50}")
-        if client:
-            result = run_task(task_id, client)
-        else:
-            # No API key: run with deterministic fallback (no LLM calls)
-            result = run_task_no_llm(task_id)
-
-        for line in result["lines"]:
-            print(line)
-        results.append(result)
-
-    print(f"\n{'='*50}")
-    print("SUMMARY")
-    for r in results:
-        g = r["grade"]
-        print(f"  {r['task_id']:8s} | score={g['final_score']} | label={g['label']} | steps={g['steps']}")
-
-
-def run_task_no_llm(task_id: str) -> dict:
-    """Deterministic fallback when no OpenAI key is available."""
-    task = TASKS[task_id]
-    env = SupportEnv(task)
-    obs = env.reset()
-
-    workflow = task.get("expected_workflow", ["reply"])
-    rewards = []
-    step = 0
-    done = False
-    lines = []
-
-    lines.append(f"[START] task={task_id} env=support model=deterministic-fallback")
-
-    wi = 0
-    while not done and step < task.get("max_steps", 10):
-        step += 1
-        action_type = workflow[wi] if wi < len(workflow) else "reply"
-        wi += 1
-
-        action = Action(action_type=action_type, content="")
-        obs, reward, done, info = env.step(action)
-        rewards.append(reward)
-
-        error_val = info.get("error") or "null"
-        lines.append(
-            f"[STEP] step={step} action={action_type} "
-            f"reward={reward:.2f} done={str(done).lower()} error={error_val}"
-        )
-
-    final_obs = env.state()
-    grade_result = grade(
-        task=task,
-        action_history=env._action_history,
-        total_reward=env.total_reward(),
-        final_state=final_obs.current_state,
-        step_count=final_obs.step_count,
-        intent_detected=final_obs.intent,
-        tone=final_obs.sentiment,
-    )
-
-    success = grade_result["label"] in ("full", "partial")
-    score = grade_result["final_score"]
-    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
-
-    lines.append(
-        f"[END] success={str(success).lower()} steps={step} "
-        f"score={score:.2f} rewards={rewards_str}"
-    )
-
-    return {"task_id": task_id, "lines": lines, "grade": grade_result, "success": success}
-
+            print(f"  Error: {str(e)}")
+    
+    print("\n" + "=" * 60)
+    print("All tasks completed!")
+    print("=" * 60)
 
 if __name__ == "__main__":
-    main()
+    # Run basic inference
+    run_inference()
+    
+    # Optionally run all tasks
+    # Uncomment the line below to test all tasks
+    # run_all_tasks()
