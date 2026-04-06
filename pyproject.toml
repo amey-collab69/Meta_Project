@@ -1,29 +1,81 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=45", "wheel", "setuptools_scm[toml]>=6.2"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "support-inbox-openenv"
-version = "0.1.0"
-description = "A real-world OpenEnv customer support inbox triage environment."
+name = "supportai-env"
+version = "3.0.0"
+description = "Production-grade OpenEnv environment for customer support AI training"
 readme = "README.md"
-requires-python = ">=3.10"
-license = { text = "MIT" }
+requires-python = ">=3.8"
+license = {text = "MIT"}
 authors = [
-  { name = "Akshat Singh" }
+    {name = "SupportAI Team"}
 ]
+keywords = ["openenv", "reinforcement-learning", "customer-support", "ai", "training"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
 dependencies = [
-  "fastapi==0.115.12",
-  "uvicorn[standard]==0.34.0",
-  "pydantic==2.10.6",
-  "openai>=2.7.2,<3",
-  "openenv-core>=0.2.0",
-  "PyYAML==6.0.2",
-  "httpx==0.28.1",
+    "openenv-core>=0.2.0",
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.29.0",
+    "openai>=1.30.0",
+    "pydantic>=2.0.0",
+    "python-multipart>=0.0.9",
+    "python-dotenv>=1.0.0",
+    "jinja2",
+    "requests>=2.31.0",
 ]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.0.0",
+    "flake8>=6.0.0",
+    "mypy>=1.0.0",
+]
+
+[project.urls]
+Homepage = "https://huggingface.co/spaces/sorf/supportai-env"
+Repository = "https://github.com/amey-collab69/Meta_Project"
+Documentation = "https://huggingface.co/spaces/sorf/supportai-env"
 
 [project.scripts]
 server = "server.app:main"
+supportai-server = "start_server:main"
 
 [tool.setuptools]
-packages = ["server", "support_inbox_env"]
+packages = ["tasks"]
+
+[tool.setuptools.package-data]
+"*" = ["*.yaml", "*.yml", "*.md"]
+
+[tool.black]
+line-length = 100
+target-version = ['py38', 'py39', 'py310', 'py311']
+include = '\.pyi?$'
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"

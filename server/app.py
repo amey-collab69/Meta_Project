@@ -1,57 +1,29 @@
-from __future__ import annotations
+"""
+SupportAI-Env — Server Entry Point for OpenEnv
+This module provides the main() function required by OpenEnv validation.
+"""
 
-from typing import Optional
+def main():
+    """
+    Main entry point for starting the SupportAI-Env server.
+    This function is called by OpenEnv's multi-mode deployment system.
+    """
+    import uvicorn
+    
+    print("=" * 60)
+    print("🚀 Starting SupportAI-Env Server (OpenEnv Mode)")
+    print("=" * 60)
+    print("📍 Server: http://0.0.0.0:7860")
+    print("📍 API Docs: http://0.0.0.0:7860/docs")
+    print("📍 Health Check: http://0.0.0.0:7860/health")
+    print("=" * 60)
+    
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=7860,
+        log_level="info"
+    )
 
-from fastapi import FastAPI
-
-from support_inbox_env.environment import SupportInboxEnvironment
-from support_inbox_env.models import (
-    EnvironmentState,
-    ResetRequest,
-    StepRequest,
-    StepResponse,
-    SupportObservation,
-)
-
-app = FastAPI(
-    title="Support Inbox OpenEnv",
-    version="0.1.0",
-    description="A deterministic OpenEnv-compatible customer support triage environment.",
-)
-
-ENVIRONMENT = SupportInboxEnvironment()
-
-
-@app.get("/")
-def root() -> dict:
-    return {
-        "name": "support-inbox-openenv",
-        "status": "ok",
-        "available_endpoints": ["/reset", "/step", "/state", "/tasks"],
-    }
-
-
-@app.get("/health")
-def health() -> dict:
-    return {"status": "ok"}
-
-
-@app.get("/tasks")
-def tasks() -> dict:
-    return {"tasks": ENVIRONMENT.list_tasks()}
-
-
-@app.post("/reset", response_model=SupportObservation)
-def reset(request: Optional[ResetRequest] = None) -> SupportObservation:
-    task_id = request.task_id if request else None
-    return ENVIRONMENT.reset(task_id=task_id)
-
-
-@app.post("/step", response_model=StepResponse)
-def step(request: StepRequest) -> StepResponse:
-    return ENVIRONMENT.step(request.action)
-
-
-@app.get("/state", response_model=EnvironmentState)
-def state() -> EnvironmentState:
-    return ENVIRONMENT.state()
+if __name__ == "__main__":
+    main()
