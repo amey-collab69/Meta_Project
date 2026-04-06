@@ -299,7 +299,7 @@ def list_user_sessions(request: Request, limit: int = 100):
 # ─── Enhanced Reset with Database Persistence ───────────────────────────────
 
 @app.post("/reset")
-async def reset(req: ResetRequest, request: Request = None):
+async def reset(req: Optional[ResetRequest] = None, request: Request = None):
     """Reset a session (optionally authenticated)."""
     start_time = time.time()
     
@@ -317,11 +317,14 @@ async def reset(req: ResetRequest, request: Request = None):
         except:
             pass  # Allow anonymous usage
     
-    task_id = req.task_id
+    # Get task_id from request or use default
+    task_id = req.task_id if req else "easy"
+    session_id = req.session_id if req else None
+    
     if task_id not in TASKS:
         raise HTTPException(status_code=400, detail=f"Unknown task_id '{task_id}'. Choose: easy, medium, hard")
     
-    session_id = req.session_id or str(uuid.uuid4())
+    session_id = session_id or str(uuid.uuid4())
     task = TASKS[task_id]
     env = SupportEnv(task)
     obs = env.reset()
