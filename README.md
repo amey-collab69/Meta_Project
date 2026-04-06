@@ -1,3 +1,13 @@
+---
+title: SupportAI-Env
+emoji: 🤖
+colorFrom: blue
+colorTo: purple
+sdk: docker
+app_file: main.py
+pinned: false
+---
+
 # 🚀 SupportAI-Env – Ultimate Customer Support AI Training Dashboard
 
 [![Modern Dashboard](https://img.shields.io/badge/UI-Killer%20Dashboard-007ACC?style=for-the-badge&logo=tailwindcss)](http://localhost:7860)
@@ -17,7 +27,7 @@
 - 🗂️ **Rich Task Library** – 3 benchmarks + infinite custom scenarios
 - 🕐 **Event Log + Deep Inspection** – Every decision captured forever
 - ⚡ **WebSocket Real-Time** – Zero lag updates across all panels
-- 📱 **Mobile-First Responsive** – iPhone → 8K monitor (flawless)
+- � **Mobile-First Responsive** – iPhone → 8K monitor (flawless)
 
 ---
 
@@ -38,8 +48,8 @@ python3 start_server.py
 
 | Level | Scenario | Workflow Example | Tone Challenge | Pro Tip |
 |-------|----------|------------------|----------------|---------|
-| 🟢 **EASY** | Order Status | `ask_details → reply` | Neutral | Perfect 1st training |
-| 🟡 **MEDIUM** | Refund Flow | `ask → validate → refund` | Complaint | Multi-step mastery |
+| � **EASY** | Order Status | `ask_details → reply` | Neutral | Perfect 1st training |
+| � **MEDIUM** | Refund Flow | `ask → validate → refund` | Complaint | Multi-step mastery |
 | 🔴 **HARD** | Angry Multi-Issue | `empathy → details → refund → close` | FURIOUS 🔥 | Tone + intent beast |
 | ✨ **CUSTOM** | Your text → AI adapts | Dynamic workflow | Auto-detect | Unlimited scenarios |
 
