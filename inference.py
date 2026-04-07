@@ -1,39 +1,29 @@
 """
 SupportAI-Env — Inference Script for OpenEnv Validation
 This script demonstrates how to interact with the environment via API endpoints.
+Outputs structured logs in the format required by OpenEnv validator.
 """
 
 import requests
-import json
-import time
+import sys
 
 BASE_URL = "http://localhost:7860"
 
 def run_inference():
-    """Run a sample inference session through the API."""
-    print("=" * 60)
-    print("SupportAI-Env Inference Script")
-    print("=" * 60)
+    """Run a sample inference session through the API with structured output."""
     
     try:
         # Step 1: Reset environment
-        print("\n[1] Resetting environment...")
+        print("[START] task=easy", flush=True)
+        
         reset_response = requests.post(f"{BASE_URL}/reset", json={})
         reset_data = reset_response.json()
         
         session_id = reset_data.get("session_id")
-        task = reset_data.get("task")
-        observation = reset_data.get("observation", {})
-        
-        print(f"✓ Session ID: {session_id}")
-        print(f"✓ Task: {task}")
-        print(f"✓ Initial State: {observation.get('current_state')}")
-        print(f"✓ Customer Message: {observation.get('customer_message')}")
-        print(f"✓ Intent: {observation.get('intent')}")
-        print(f"✓ Sentiment: {observation.get('sentiment')}")
+        task = reset_data.get("task", "easy")
         
         # Step 2: Send first action
-        print("\n[2] Sending action: ask_details...")
+        step_count = 1
         step_payload = {
             "session_id": session_id,
             "action_type": "ask_details",
@@ -42,18 +32,14 @@ def run_inference():
         step_response = requests.post(f"{BASE_URL}/step", json=step_payload)
         step_data = step_response.json()
         
-        observation = step_data.get("observation", {})
         reward = step_data.get("reward", 0)
         done = step_data.get("done", False)
         
-        print(f"✓ Reward: {reward}")
-        print(f"✓ Done: {done}")
-        print(f"✓ Current State: {observation.get('current_state')}")
-        print(f"✓ Step Count: {observation.get('step_count')}")
+        print(f"[STEP] step={step_count} reward={reward:.2f}", flush=True)
         
         # Step 3: Send second action if not done
         if not done:
-            print("\n[3] Sending action: reply...")
+            step_count += 1
             step_payload = {
                 "session_id": session_id,
                 "action_type": "reply",
@@ -62,48 +48,34 @@ def run_inference():
             step_response = requests.post(f"{BASE_URL}/step", json=step_payload)
             step_data = step_response.json()
             
-            observation = step_data.get("observation", {})
             reward = step_data.get("reward", 0)
             done = step_data.get("done", False)
             
-            print(f"✓ Reward: {reward}")
-            print(f"✓ Done: {done}")
-            print(f"✓ Current State: {observation.get('current_state')}")
-            
-            # Check if we have a grade
-            if done and "grade" in step_data:
-                grade = step_data["grade"]
-                print(f"\n[GRADE]")
-                print(f"✓ Score: {grade.get('final_score')}")
-                print(f"✓ Label: {grade.get('label')}")
-                print(f"✓ Assessment: {grade.get('assessment', 'N/A')}")
+            print(f"[STEP] step={step_count} reward={reward:.2f}", flush=True)
         
-        print("\n" + "=" * 60)
-        print("Inference completed successfully!")
-        print("=" * 60)
+        # Get final score
+        final_score = 0.0
+        if done and "grade" in step_data:
+            grade = step_data["grade"]
+            final_score = grade.get("final_score", 0.0)
+        
+        print(f"[END] task={task} score={final_score:.2f} steps={step_count}", flush=True)
         
     except requests.exceptions.ConnectionError:
-        print("✗ Error: Could not connect to server at", BASE_URL)
-        print("  Make sure the server is running: python start_server.py")
+        print("[ERROR] Could not connect to server", flush=True)
+        sys.exit(1)
     except Exception as e:
-        print(f"✗ Error: {str(e)}")
-        import traceback
-        traceback.print_exc()
+        print(f"[ERROR] {str(e)}", flush=True)
+        sys.exit(1)
 
 def run_all_tasks():
-    """Run inference on all available tasks."""
+    """Run inference on all available tasks with structured output."""
     tasks = ["easy", "medium", "hard"]
     
-    print("=" * 60)
-    print("Running inference on all tasks")
-    print("=" * 60)
-    
     for task_id in tasks:
-        print(f"\n{'='*60}")
-        print(f"Task: {task_id.upper()}")
-        print(f"{'='*60}")
-        
         try:
+            print(f"[START] task={task_id}", flush=True)
+            
             # Reset with specific task
             reset_response = requests.post(
                 f"{BASE_URL}/reset",
@@ -112,17 +84,17 @@ def run_all_tasks():
             reset_data = reset_response.json()
             session_id = reset_data.get("session_id")
             
-            print(f"Session: {session_id}")
-            print(f"Message: {reset_data.get('observation', {}).get('customer_message')}")
-            
             # Simple action sequence
             actions = ["ask_details", "reply"]
+            step_count = 0
+            final_score = 0.0
             
-            for i, action_type in enumerate(actions, 1):
+            for action_type in actions:
+                step_count += 1
                 step_payload = {
                     "session_id": session_id,
                     "action_type": action_type,
-                    "content": f"Action {i}"
+                    "content": f"Action {step_count}"
                 }
                 step_response = requests.post(f"{BASE_URL}/step", json=step_payload)
                 step_data = step_response.json()
@@ -130,25 +102,21 @@ def run_all_tasks():
                 done = step_data.get("done", False)
                 reward = step_data.get("reward", 0)
                 
-                print(f"  Step {i}: {action_type} | Reward: {reward:.2f} | Done: {done}")
+                print(f"[STEP] step={step_count} reward={reward:.2f}", flush=True)
                 
                 if done:
                     if "grade" in step_data:
                         grade = step_data["grade"]
-                        print(f"  Grade: {grade.get('final_score')} ({grade.get('label')})")
+                        final_score = grade.get("final_score", 0.0)
                     break
             
-            time.sleep(0.5)  # Brief pause between tasks
+            print(f"[END] task={task_id} score={final_score:.2f} steps={step_count}", flush=True)
             
         except Exception as e:
-            print(f"  Error: {str(e)}")
-    
-    print("\n" + "=" * 60)
-    print("All tasks completed!")
-    print("=" * 60)
+            print(f"[ERROR] task={task_id} error={str(e)}", flush=True)
 
 if __name__ == "__main__":
-    # Run basic inference
+    # Run basic inference with structured output
     run_inference()
     
     # Optionally run all tasks
