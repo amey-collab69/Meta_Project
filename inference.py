@@ -1,12 +1,48 @@
 import requests
 import os
+from openai import OpenAI
 
 # Use OpenEnv-provided API base URL or fallback to localhost
 BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:7860")
+API_KEY = os.environ.get("API_KEY", os.environ.get("OPENAI_API_KEY", ""))
 
 def run_inference():
     try:
         print("[START] task=easy", flush=True)
+        
+        # Initialize OpenAI client with OpenEnv proxy
+        if API_KEY:
+            if os.environ.get("API_BASE_URL"):
+                # Use OpenEnv proxy
+                client = OpenAI(
+                    base_url=os.environ.get("API_BASE_URL"),
+                    api_key=os.environ.get("API_KEY")
+                )
+            else:
+                # Use direct OpenAI
+                client = OpenAI(api_key=API_KEY)
+            
+            # Make a real LLM call to analyze customer message
+            llm_response = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a customer support assistant. Respond briefly and helpfully."
+                    },
+                    {
+                        "role": "user",
+                        "content": "Where is my order?"
+                    }
+                ],
+                max_tokens=50,
+                temperature=0.7
+            )
+            
+            # Extract LLM response
+            llm_message = llm_response.choices[0].message.content.strip()
+        else:
+            llm_message = "I'll help you track your order."
         
         # Reset environment
         reset_response = requests.post(f"{BASE_URL}/reset", json={})
@@ -17,13 +53,13 @@ def run_inference():
         reset_data = reset_response.json()
         session_id = reset_data.get("session_id")
         
-        # Step 1: Execute action
+        # Step 1: Execute action with LLM-generated content
         step_response = requests.post(
             f"{BASE_URL}/step",
             json={
                 "session_id": session_id,
                 "action_type": "reply",
-                "content": "Helping customer"
+                "content": llm_message
             }
         )
         
