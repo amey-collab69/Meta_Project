@@ -8,15 +8,10 @@ from openai import OpenAI
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:7860")
 MODEL_NAME = os.getenv("MODEL_NAME", "gpt-3.5-turbo")
 HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("OPENAI_API_KEY") or os.getenv("API_KEY")
+API_KEY = os.getenv("API_KEY") or os.getenv("HF_TOKEN") or os.getenv("OPENAI_API_KEY")
 BENCHMARK = os.getenv("BENCHMARK", "supportai-env")
 TASK_IDS = ["easy", "medium", "hard"]
 DEFAULT_TASK_MAX_STEPS = {"easy": 4, "medium": 6, "hard": 8}
-ACTION_CONTENTS = {
-    "reply": "I have reviewed your issue and am working to resolve it promptly.",
-    "ask_details": "Could you please share your order ID and any additional details so I can help?",
-    "refund": "I have processed your refund and you should receive confirmation shortly.",
-    "escalate": "I'm escalating this case to our senior support team for a fast resolution.",
-}
 
 
 def format_bool(value: bool) -> str:
@@ -35,41 +30,78 @@ def safe_str(value: Optional[str]) -> str:
     return value if value else "null"
 
 
-def warmup_model(client: Optional[OpenAI]) -> None:
+def make_client() -> Optional[OpenAI]:
+    """Initialize OpenAI client with proxy if available."""
+    if not API_KEY:
+        return None
+    # Use API_BASE_URL as proxy if set, otherwise use default OpenAI
+    if API_BASE_URL and API_BASE_URL != "http://localhost:7860":
+        try:
+            return OpenAI(api_key=API_KEY, base_url=API_BASE_URL)
+        except Exception:
+            pass
+    return OpenAI(api_key=API_KEY)
+
+
+def generate_action_with_llm(client: Optional[OpenAI], observation: dict, step_index: int) -> tuple:
+    """Use LLM to generate action type and content via proxy.
+    Returns: (action_type, content)
+    """
     if not client:
-        return
+        return ("reply", "I'm here to help resolve your issue.")
+    
     try:
-        client.chat.completions.create(
+        customer_msg = observation.get("observation", {}).get("customer_message", "")
+        current_state = observation.get("observation", {}).get("current_state", "IDENTIFY_INTENT")
+        
+        prompt = f"""You are a customer support agent. Based on the customer message and current state, 
+determine the BEST action to take.
+
+Customer message: {customer_msg}
+Current state: {current_state}
+Step #{step_index}
+
+Available actions: reply, ask_details, refund, escalate
+
+Respond with exactly:
+ACTION: <action_type>
+CONTENT: <brief response message>"""
+        
+        response = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[
                 {
                     "role": "system",
-                    "content": "You are a support assistant classifier."
+                    "content": "You are a customer support decision-maker. Respond with ACTION and CONTENT lines."
                 },
                 {
                     "role": "user",
-                    "content": "Classify the following message into one of: reply, ask_details, refund, escalate. Message: Where is my order?"
-                },
+                    "content": prompt
+                }
             ],
-            max_tokens=1,
-            temperature=0,
+            max_tokens=100,
+            temperature=0.7,
         )
-    except Exception:
-        pass
-
-
-def choose_action(observation: dict, task_id: str) -> str:
-    state = observation.get("observation", {}).get("current_state", "IDENTIFY_INTENT")
-    step_count = observation.get("observation", {}).get("step_count", 0)
-    workflow = observation.get("observation", {}).get("task", {})
-    expected_workflow = {
-        "easy": ["ask_details", "reply"],
-        "medium": ["ask_details", "ask_details", "refund"],
-        "hard": ["reply", "ask_details", "refund", "reply"],
-    }.get(task_id, ["reply"])
-    if step_count < len(expected_workflow):
-        return expected_workflow[step_count]
-    return "reply"
+        
+        llm_response = response.choices[0].message.content.strip()
+        
+        # Parse response
+        action_type = "reply"
+        content = "I'm working to resolve your issue."
+        
+        for line in llm_response.split("\n"):
+            if line.startswith("ACTION:"):
+                action_type = line.replace("ACTION:", "").strip().lower()
+                if action_type not in ("reply", "ask_details", "refund", "escalate"):
+                    action_type = "reply"
+            elif line.startswith("CONTENT:"):
+                content = line.replace("CONTENT:", "").strip()
+        
+        return (action_type, content)
+    
+    except Exception as e:
+        # Fallback to default action
+        return ("reply", f"I'm here to help. (Error: {str(e)[:30]})")
 
 
 def run_task(task_id: str, client: Optional[OpenAI]) -> None:
@@ -97,8 +129,9 @@ def run_task(task_id: str, client: Optional[OpenAI]) -> None:
             warmup_model(client)
 
         for step_index in range(1, DEFAULT_TASK_MAX_STEPS.get(task_id, 8) + 1):
-            action_type = choose_action(observation, task_id)
-            content = ACTION_CONTENTS.get(action_type, "I am assisting you with your request.")
+            # Use LLM to generate action via proxy
+            action_type, content = generate_action_with_llm(client, observation, step_index)
+            
             payload = {
                 "session_id": session_id,
                 "action_type": action_type,
