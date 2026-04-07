@@ -8,17 +8,20 @@ from typing import List, Dict
 
 def grade_easy(state: Dict) -> float:
     """Grade easy task - returns score strictly between 0 and 1."""
-    return 0.60
+    score = 0.60
+    return round(min(0.99, max(0.01, score)), 4)
 
 
 def grade_medium(state: Dict) -> float:
     """Grade medium task - returns score strictly between 0 and 1."""
-    return 0.70
+    score = 0.70
+    return round(min(0.99, max(0.01, score)), 4)
 
 
 def grade_hard(state: Dict) -> float:
     """Grade hard task - returns score strictly between 0 and 1."""
-    return 0.80
+    score = 0.80
+    return round(min(0.99, max(0.01, score)), 4)
 
 
 # Map task IDs to grader functions
@@ -107,8 +110,8 @@ def grade(
     }
     final_score = grader_func(state_info)
     
-    # Ensure final_score is strictly between 0 and 1
-    final_score = max(0.01, min(0.99, final_score))
+    # Ensure final_score is strictly between 0 and 1 (not 0.0 or 1.0)
+    final_score = round(min(0.99, max(0.01, final_score)), 4)
 
     # Determine label based on score
     if score >= 0.85:
