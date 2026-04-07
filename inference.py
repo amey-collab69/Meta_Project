@@ -4,7 +4,12 @@ from openai import OpenAI
 
 # Use OpenEnv-provided API base URL or fallback to localhost
 BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:7860")
-API_KEY = os.environ.get("API_KEY", os.environ.get("OPENAI_API_KEY", ""))
+
+# Check for API key in this order:
+# 1. API_KEY (OpenEnv validator provides this)
+# 2. OPENAI_APT_KEY (your Hugging Face secret name)
+# 3. OPENAI_API_KEY (standard fallback)
+API_KEY = os.environ.get("API_KEY") or os.environ.get("OPENAI_APT_KEY") or os.environ.get("OPENAI_API_KEY", "")
 
 def run_inference():
     try:
@@ -19,7 +24,7 @@ def run_inference():
                     api_key=os.environ.get("API_KEY")
                 )
             else:
-                # Use direct OpenAI
+                # Use direct OpenAI with your key
                 client = OpenAI(api_key=API_KEY)
             
             # Make a real LLM call to analyze customer message

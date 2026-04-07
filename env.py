@@ -253,7 +253,8 @@ def detect_tone(message: str, use_cache: bool = True) -> str:
     rule_tone = _enhanced_rule_based_tone(msg)
 
     # Use OpenEnv-provided API credentials or fallback to environment
-    api_key = os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY", "")
+    # Check: API_KEY (OpenEnv) -> OPENAI_APT_KEY (HF secret) -> OPENAI_API_KEY (standard)
+    api_key = os.getenv("API_KEY") or os.getenv("OPENAI_APT_KEY") or os.getenv("OPENAI_API_KEY", "")
     base_url = os.getenv("API_BASE_URL")
     
     if not api_key:
