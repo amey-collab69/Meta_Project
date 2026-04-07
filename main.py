@@ -13,6 +13,7 @@ from typing import Optional, Dict, List
 import uuid
 import time
 import asyncio
+import json
 from collections import defaultdict
 
 from env import SupportEnv, Action
@@ -131,9 +132,9 @@ def get_metrics():
     )
 
 @app.post("/reset")
-def reset(req: ResetRequest):
+async def reset(req: Optional[ResetRequest] = None):
     start_time = time.time()
-    task_id = req.task_id
+    task_id = req.task_id if req else "easy"
     if task_id not in TASKS:
         raise HTTPException(status_code=400, detail=f"Unknown task_id '{task_id}'. Choose: easy, medium, hard")
     session_id = req.session_id or str(uuid.uuid4())
@@ -152,15 +153,18 @@ def reset(req: ResetRequest):
     _track_response_time(duration_ms)
     _update_metrics("reset", task_id)
     
-    return {
+    result = {
         "session_id": session_id,
         "task": task_id,
         "observation": obs.model_dump(),
-        "processing_time_ms": round(duration_ms, 2)
+        "processing_time_ms": round(duration_ms, 2),
+        "type": "reset"
     }
+    await _broadcast_update(session_id, result)
+    return result
 
 @app.post("/custom_reset")
-def custom_reset(req: CustomResetRequest):
+async def custom_reset(req: CustomResetRequest):
     """Start a session with a custom user-typed message (enhanced)."""
     start_time = time.time()
     
@@ -209,15 +213,18 @@ def custom_reset(req: CustomResetRequest):
     _track_response_time(duration_ms)
     _update_metrics("reset", "custom")
     
-    return {
+    result = {
         "session_id": session_id,
         "task": "custom",
         "observation": obs.model_dump(),
-        "processing_time_ms": round(duration_ms, 2)
+        "processing_time_ms": round(duration_ms, 2),
+        "type": "custom_reset"
     }
+    await _broadcast_update(session_id, result)
+    return result
 
 @app.post("/step")
-def step(req: StepRequest):
+async def step(req: StepRequest):
     start_time = time.time()
     
     session = _sessions.get(req.session_id)
@@ -259,6 +266,7 @@ def step(req: StepRequest):
     _track_response_time(duration_ms)
     _update_metrics("step")
     result["api_processing_time_ms"] = round(duration_ms, 2)
+    await _broadcast_update(req.session_id, result)
     
     return result
 
@@ -298,259 +306,659 @@ def list_sessions():
                 "task": s["task"]["id"],
                 "done": s["done"],
                 "age_seconds": round(time.time() - s["created_at"], 2),
-                "last_activity_seconds_ago": round(time.time() - s["last_activity"], 2)
+        "last_activity_seconds_ago": round(time.time() - s["last_activity"], 2)
             }
             for sid, s in _sessions.items()
         ]
+    }
+
+@app.websocket("/ws/{session_id}")
+async def websocket_endpoint(websocket: WebSocket, session_id: str):
+    await websocket.accept()
+    _active_connections[session_id] = websocket
+    try:
+        while True:
+            await websocket.receive_text()  # Keep connection alive
+    except WebSocketDisconnect:
+        _active_connections.pop(session_id, None)
+
+def _serialize_task(task: Dict) -> Dict:
+    """Return frontend-safe task metadata."""
+    return {
+        "id": task["id"],
+        "name": task["name"],
+        "difficulty": task["difficulty"],
+        "initial_message": task["initial_message"],
+        "expected_intent": task["expected_intent"],
+        "expected_workflow": task["expected_workflow"],
+        "max_steps": task["max_steps"],
+        "success_condition": task["success_condition"],
+        "description": task.get("description", ""),
+        "multi_intent": task.get("multi_intent", []),
+        "requires_tone_handling": task.get("requires_tone_handling", False),
+        "scoring": task.get("scoring", {}),
+    }
+
+@app.get("/task_catalog")
+def task_catalog():
+    """Expose task metadata for richer frontend rendering."""
+    return {
+        "tasks": [_serialize_task(task) for task in TASKS.values()],
+        "supported_actions": ["reply", "ask_details", "refund", "escalate"],
     }
 
 # ─── GUI ──────────────────────────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
 def gui():
-    return HTMLResponse(content=GUI_HTML)
+    task_payload = {task_id: _serialize_task(task) for task_id, task in TASKS.items()}
+    return HTMLResponse(content=build_gui_html(task_payload))
 
-GUI_HTML = """<!DOCTYPE html>
+def build_gui_html(task_payload: Dict[str, Dict]) -> str:
+    return """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>SupportAI-Env</title>
+<title>SupportAI-Env Control Center</title>
 <style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:'Segoe UI',sans-serif;background:#0f1117;color:#e0e0e0;height:100vh;display:flex;flex-direction:column}
-header{background:#1a1d27;padding:12px 20px;display:flex;align-items:center;gap:10px;border-bottom:1px solid #2a2d3a}
-header h1{font-size:1.1rem;color:#7c83fd}
-.badge{font-size:0.7rem;background:#2a2d3a;padding:2px 8px;border-radius:10px;color:#aaa}
-.layout{display:flex;flex:1;overflow:hidden}
-
-/* Sidebar */
-.sidebar{width:200px;background:#1a1d27;padding:14px;border-right:1px solid #2a2d3a;display:flex;flex-direction:column;gap:10px}
-.sidebar h3{font-size:0.7rem;color:#666;text-transform:uppercase;letter-spacing:1px}
-.task-btn{background:#2a2d3a;border:1px solid #3a3d4a;color:#bbb;padding:8px 10px;border-radius:8px;cursor:pointer;font-size:0.8rem;text-align:left;width:100%}
-.task-btn.active,.task-btn:hover{background:#7c83fd22;border-color:#7c83fd;color:#7c83fd}
-.reward-panel{margin-top:auto;background:#2a2d3a;border-radius:8px;padding:10px}
-.reward-panel .rlabel{font-size:0.65rem;color:#888}
-.reward-panel .rval{font-size:1.5rem;font-weight:bold;color:#7c83fd}
-.reward-panel .rsub{font-size:0.7rem;color:#aaa;margin-top:3px}
-
-/* Main chat */
-.chat{flex:1;display:flex;flex-direction:column;overflow:hidden}
-.guide-bar{background:#1e2030;border-bottom:1px solid #2a2d3a;padding:8px 16px;font-size:0.8rem;color:#a0a8ff;display:flex;align-items:center;gap:8px}
-.guide-bar .step-indicator{background:#7c83fd;color:#fff;border-radius:12px;padding:2px 8px;font-size:0.7rem;font-weight:bold}
-.messages{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px}
-
-/* Message bubbles */
-.msg{max-width:75%;padding:10px 14px;border-radius:12px;font-size:0.88rem;line-height:1.5}
-.msg.customer{background:#2a2d3a;align-self:flex-start;border-bottom-left-radius:3px;border-left:3px solid #555}
-.msg.agent{background:#1a2e3a;border:1px solid #2a5a6a;align-self:flex-end;border-bottom-right-radius:3px;color:#a0d4ff;border-right:3px solid #7c83fd}
-.msg.system{background:#1a1d27;border:1px solid #3a3d4a;align-self:center;color:#aaa;font-size:0.78rem;max-width:90%;text-align:center;border-radius:8px}
-.msg.success{background:#1e3a1e;border:1px solid #2a6a2a;color:#6fcf97;align-self:center;text-align:center;max-width:90%}
-.msg.error-msg{background:#3a1e1e;border:1px solid #6a2a2a;color:#ff8080;align-self:center;text-align:center;max-width:90%}
-.msg .meta{font-size:0.68rem;color:#666;margin-top:4px}
-.msg .reward-badge{display:inline-block;padding:1px 6px;border-radius:8px;font-size:0.7rem;font-weight:bold;margin-left:6px}
-.reward-badge.pos{background:#1e4a1e;color:#6fcf97}
-.reward-badge.neg{background:#4a1e1e;color:#ff8080}
-
-/* Action area */
-.action-area{padding:14px 16px;background:#1a1d27;border-top:1px solid #2a2d3a}
-.action-area h4{font-size:0.7rem;color:#666;text-transform:uppercase;margin-bottom:8px}
-.input-row{display:flex;gap:8px;margin-bottom:10px}
-#msg-input{flex:1;background:#2a2d3a;border:1px solid #3a3d4a;color:#e0e0e0;padding:8px 12px;border-radius:8px;font-size:0.85rem}
-#msg-input:focus{outline:none;border-color:#7c83fd}
-.btn-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
-.act-btn{background:#2a2d3a;border:1px solid #3a3d4a;color:#ccc;padding:10px 6px;border-radius:8px;cursor:pointer;font-size:0.82rem;transition:all 0.15s}
-.act-btn:hover:not(:disabled){background:#7c83fd22;border-color:#7c83fd;color:#7c83fd}
-.act-btn:disabled{opacity:0.35;cursor:not-allowed}
-.act-btn.highlight{border-color:#7c83fd;color:#7c83fd;box-shadow:0 0 8px #7c83fd44}
-
-/* State bar */
-.state-bar{padding:6px 16px;background:#12141e;border-top:1px solid #2a2d3a;font-size:0.72rem;color:#666;display:flex;gap:16px;flex-wrap:wrap}
-.state-bar .sv{color:#aaa}
-.state-bar .sv.hi{color:#7c83fd;font-weight:bold}
+:root{
+  --bg:#f4efe7;
+  --ink:#1f2937;
+  --muted:#6b7280;
+  --panel:#fffdf9;
+  --panel-strong:#fffaf2;
+  --line:rgba(64,48,32,.12);
+  --shadow:0 24px 70px rgba(53,33,13,.12);
+  --brand:#c56a1a;
+  --brand-deep:#8b4513;
+  --teal:#17594a;
+  --green:#207d52;
+  --red:#b85042;
+  --gold:#f3b84b;
+}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%}
+body{
+  font-family:Georgia,"Times New Roman",serif;
+  color:var(--ink);
+  background:
+    radial-gradient(circle at top left, rgba(243,184,75,.35), transparent 28%),
+    radial-gradient(circle at top right, rgba(23,89,74,.12), transparent 22%),
+    linear-gradient(180deg, #f9f4ec 0%, #f2ece2 45%, #efe7db 100%);
+}
+.shell{max-width:1480px;margin:0 auto;padding:28px 22px 32px}
+.hero{
+  background:linear-gradient(135deg, rgba(255,250,242,.96), rgba(250,240,225,.94));
+  border:1px solid var(--line);
+  border-radius:28px;
+  box-shadow:var(--shadow);
+  padding:28px;
+  position:relative;
+  overflow:hidden;
+}
+.hero:before{
+  content:"";
+  position:absolute;
+  inset:auto -8% -35% auto;
+  width:360px;height:360px;border-radius:999px;
+  background:radial-gradient(circle, rgba(197,106,26,.16), rgba(197,106,26,0));
+}
+.eyebrow{display:inline-flex;align-items:center;gap:10px;padding:8px 14px;border-radius:999px;background:rgba(197,106,26,.10);color:var(--brand-deep);font:600 12px/1.2 "Trebuchet MS",sans-serif;letter-spacing:.14em;text-transform:uppercase}
+.hero-grid{display:grid;grid-template-columns:1.35fr .9fr;gap:22px;margin-top:18px}
+.hero h1{margin:0;font-size:clamp(2.4rem,4vw,4.4rem);line-height:.95;letter-spacing:-.04em}
+.hero p{margin:14px 0 0;font:500 17px/1.6 "Trebuchet MS",sans-serif;color:#51473d;max-width:66ch}
+.status-row,.meta-row,.stat-grid,.task-grid,.content-grid,.mini-grid,.state-grid,.timeline,.actions-grid,.event-list{display:grid;gap:14px}
+.status-row{grid-template-columns:repeat(4,minmax(0,1fr));margin-top:22px}
+.metric,.panel,.task-card,.action-card,.timeline-card,.msg,.event-card{
+  background:rgba(255,253,249,.88);
+  border:1px solid var(--line);
+  border-radius:22px;
+  box-shadow:0 10px 30px rgba(91,66,32,.06);
+}
+.metric{padding:18px}
+.metric .label{font:600 12px/1.2 "Trebuchet MS",sans-serif;color:var(--muted);text-transform:uppercase;letter-spacing:.12em}
+.metric .value{margin-top:10px;font-size:2rem}
+.metric .sub{margin-top:8px;font:500 13px/1.4 "Trebuchet MS",sans-serif;color:var(--muted)}
+.hero-side{display:flex;flex-direction:column;gap:16px}
+.stack{display:flex;flex-wrap:wrap;gap:10px}
+.badge{display:inline-flex;align-items:center;gap:8px;padding:10px 14px;border-radius:999px;background:#fff7ea;border:1px solid rgba(197,106,26,.16);font:600 12px/1.2 "Trebuchet MS",sans-serif;color:#744315;letter-spacing:.08em;text-transform:uppercase}
+.pill-online{background:#edf8f0;color:var(--green);border-color:rgba(32,125,82,.16)}
+.pill-warn{background:#fff2df;color:#9b5a15}
+.pill-offline{background:#fdeceb;color:var(--red)}
+.shell-section{margin-top:24px}
+.content-grid{grid-template-columns:1.05fr 1.2fr .9fr;align-items:start}
+.panel{padding:20px}
+.panel h2,.panel h3{margin:0 0 14px}
+.panel h2{font-size:1.4rem}
+.panel h3{font-size:1.02rem}
+.panel-copy{font:500 14px/1.7 "Trebuchet MS",sans-serif;color:#5c5146}
+.task-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+.task-card{padding:18px;cursor:pointer;transition:transform .18s ease, border-color .18s ease, box-shadow .18s ease}
+.task-card:hover{transform:translateY(-2px);border-color:rgba(197,106,26,.35)}
+.task-card.active{border-color:rgba(197,106,26,.52);box-shadow:0 14px 34px rgba(197,106,26,.12)}
+.task-top{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
+.task-name{font-size:1.16rem;margin:2px 0 8px}
+.task-chip{padding:6px 10px;border-radius:999px;font:700 11px/1 "Trebuchet MS",sans-serif;letter-spacing:.12em;text-transform:uppercase}
+.easy{background:#edf8f0;color:var(--green)}
+.medium{background:#fff5e4;color:#9b5a15}
+.hard{background:#fdeceb;color:var(--red)}
+.task-meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.micro{padding:6px 10px;border-radius:999px;background:#f5efe5;font:600 11px/1 "Trebuchet MS",sans-serif;color:#665748}
+.task-desc{font:500 14px/1.6 "Trebuchet MS",sans-serif;color:#54493f}
+.feature-list,.workflow-list,.event-list{margin:0;padding:0;list-style:none}
+.feature-list li,.workflow-list li,.event-card,.state-item,.rubric-item{font:500 14px/1.55 "Trebuchet MS",sans-serif}
+.feature-list li,.rubric-item,.state-item{padding:12px 14px;border-radius:16px;background:var(--panel-strong);border:1px solid rgba(64,48,32,.08)}
+.mini-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+.state-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+.state-item strong,.rubric-item strong{display:block;font:700 11px/1.2 "Trebuchet MS",sans-serif;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+.workflow-list{display:grid;gap:10px}
+.workflow-step{display:flex;gap:12px;align-items:flex-start;padding:12px 14px;border-radius:18px;background:#f8f1e8;border:1px solid rgba(64,48,32,.08)}
+.workflow-step.active{background:#fff4dc;border-color:rgba(197,106,26,.28)}
+.workflow-step.done{background:#eef8f0;border-color:rgba(32,125,82,.18)}
+.step-index{flex:0 0 34px;height:34px;border-radius:999px;background:#fff;border:1px solid rgba(64,48,32,.10);display:grid;place-items:center;font:700 13px/1 "Trebuchet MS",sans-serif}
+.step-copy{display:flex;flex-direction:column;gap:4px}
+.step-copy span{font-size:15px;color:#2b241f}
+.step-copy small{font-size:12px;color:var(--muted);font-family:"Trebuchet MS",sans-serif}
+.timeline{grid-template-columns:minmax(0,1fr)}
+.timeline-card{padding:18px}
+.guide-box{padding:14px 16px;border-radius:18px;background:linear-gradient(135deg,#fff5de,#fff9ef);border:1px solid rgba(197,106,26,.16)}
+.guide-label{font:700 11px/1.2 "Trebuchet MS",sans-serif;letter-spacing:.14em;text-transform:uppercase;color:#8b5d24}
+.guide-text{margin-top:8px;font:600 15px/1.5 "Trebuchet MS",sans-serif;color:#503f2f}
+.messages{display:flex;flex-direction:column;gap:12px;max-height:560px;overflow:auto;padding-right:4px}
+.msg{padding:16px 18px}
+.msg.customer{border-left:4px solid #8b4513}
+.msg.agent{border-left:4px solid var(--teal)}
+.msg.system{border-left:4px solid #9b8d7d}
+.msg.success{border-left:4px solid var(--green);background:#f0faf4}
+.msg.error-msg{border-left:4px solid var(--red);background:#fef2f1}
+.msg-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.msg-role{font:700 11px/1.2 "Trebuchet MS",sans-serif;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.msg-body{margin-top:8px;font-size:1rem;line-height:1.6}
+.msg-meta{margin-top:10px;font:600 12px/1.5 "Trebuchet MS",sans-serif;color:#736452}
+.actions-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+.action-card{padding:14px;text-align:left;cursor:pointer;transition:border-color .16s ease, transform .16s ease, background .16s ease}
+.action-card:hover:not(:disabled){transform:translateY(-2px);border-color:rgba(197,106,26,.34)}
+.action-card:disabled{opacity:.45;cursor:not-allowed}
+.action-card.active-suggestion{background:#fff2d4;border-color:rgba(197,106,26,.42)}
+.action-card strong{display:block;font-size:1rem}
+.action-card span{display:block;margin-top:6px;font:500 13px/1.5 "Trebuchet MS",sans-serif;color:#665748}
+.composer{margin-top:16px}
+.composer textarea,.custom-box textarea{
+  width:100%;min-height:110px;resize:vertical;border-radius:18px;padding:14px 16px;
+  border:1px solid rgba(64,48,32,.12);background:#fffefb;color:var(--ink);
+  font:500 15px/1.55 "Trebuchet MS",sans-serif;
+}
+.composer textarea:focus,.custom-box textarea:focus{outline:none;border-color:rgba(197,106,26,.44);box-shadow:0 0 0 4px rgba(197,106,26,.08)}
+.composer-note{margin-top:10px;font:500 12px/1.5 "Trebuchet MS",sans-serif;color:var(--muted)}
+.primary-btn{
+  border:none;border-radius:16px;padding:13px 18px;background:linear-gradient(135deg,var(--brand),#df8d36);color:#fff;
+  font:700 14px/1 "Trebuchet MS",sans-serif;letter-spacing:.04em;cursor:pointer;box-shadow:0 14px 28px rgba(197,106,26,.22)
+}
+.secondary-btn{
+  border:1px solid rgba(64,48,32,.12);border-radius:16px;padding:12px 16px;background:#fffaf1;color:#513b28;
+  font:700 13px/1 "Trebuchet MS",sans-serif;cursor:pointer
+}
+.btn-row{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px}
+.event-list{display:grid;gap:10px;max-height:420px;overflow:auto}
+.event-card{padding:12px 14px}
+.event-card strong{display:block;font:700 11px/1.2 "Trebuchet MS",sans-serif;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.event-card span{display:block;margin-top:8px;color:#40372f}
+.event-card small{display:block;margin-top:6px;color:var(--muted)}
+.custom-box{margin-top:16px;padding:16px;border-radius:22px;background:#fff8ef;border:1px dashed rgba(197,106,26,.28)}
+.helper{font:500 13px/1.5 "Trebuchet MS",sans-serif;color:var(--muted)}
+@media (max-width:1180px){
+  .hero-grid,.content-grid{grid-template-columns:1fr}
+}
+@media (max-width:760px){
+  .shell{padding:18px 14px 28px}
+  .status-row,.task-grid,.mini-grid,.state-grid,.actions-grid{grid-template-columns:1fr}
+  .hero{padding:22px}
+  .metric .value{font-size:1.6rem}
+}
 </style>
 </head>
 <body>
-<header>
-  <h1>🤖 SupportAI-Env</h1>
-  <span class="badge">OpenEnv v2.0</span>
-  <span class="badge" id="session-badge">No session</span>
-  <span class="badge" id="task-badge">—</span>
-  <span class="badge" id="perf-badge" style="background:#1e4a1e;color:#6fcf97">⚡ 0ms</span>
-  <span class="badge" id="status-badge" style="background:#1e4a1e;color:#6fcf97">● Online</span>
-</header>
-
-<div class="layout">
-  <div class="sidebar">
-    <h3>Select Task</h3>
-    <button class="task-btn active" onclick="startTask('easy',this)">🟢 Easy<br/><small style="color:#888">Order Tracking</small></button>
-    <button class="task-btn" onclick="startTask('medium',this)">🟡 Medium<br/><small style="color:#888">Refund Workflow</small></button>
-    <button class="task-btn" onclick="startTask('hard',this)">🔴 Hard<br/><small style="color:#888">Multi-Intent</small></button>
-    <button class="task-btn" id="custom-tab-btn" onclick="showCustomTab(this)">✏️ Custom<br/><small style="color:#888">Your Problem</small></button>
-    <div id="custom-input-area" style="display:none;flex-direction:column;gap:6px;margin-top:4px">
-      <textarea id="custom-msg" rows="4" placeholder="Type your customer problem here..." style="background:#2a2d3a;border:1px solid #3a3d4a;color:#e0e0e0;padding:8px;border-radius:8px;font-size:0.8rem;resize:vertical;width:100%"></textarea>
-      <button onclick="startCustomTask()" style="background:#7c83fd;border:none;color:#fff;padding:8px;border-radius:8px;cursor:pointer;font-size:0.82rem;font-weight:bold">▶ Start Chat</button>
-    </div>
-    <div class="reward-panel">
-      <div class="rlabel">Total Reward</div>
-      <div class="rval" id="total-reward">—</div>
-      <div class="rsub" id="step-info">Steps: 0</div>
-      <div class="rsub" id="score-info" style="color:#7c83fd;margin-top:4px"></div>
-    </div>
-  </div>
-
-  <div class="chat">
-    <div class="guide-bar" id="guide-bar">
-      <span class="step-indicator" id="step-num">—</span>
-      <span id="guide-text">Select a task from the left to begin</span>
-    </div>
-
-    <div class="messages" id="messages">
-      <div class="msg system">👈 Select a task on the left to start. Then follow the guided steps.</div>
-    </div>
-
-    <div class="action-area">
-      <h4>Your Action</h4>
-      <div class="input-row">
-        <input id="msg-input" type="text" placeholder="Type your reply message here (required for Reply)..." />
+<div class="shell">
+  <section class="hero">
+    <div class="eyebrow">SupportAI Env • Advanced Review Lab</div>
+    <div class="hero-grid">
+      <div>
+        <h1>Modern support-agent evaluation, with the workflow details visible.</h1>
+        <p>
+          Run guided customer-support simulations, inspect intent and tone detection, track reward quality in real time,
+          and review each step like a product-grade operations console.
+        </p>
+        <div class="status-row">
+          <div class="metric">
+            <div class="label">Session</div>
+            <div class="value" id="session-badge">No active run</div>
+            <div class="sub" id="task-badge">Choose a benchmark scenario to begin.</div>
+          </div>
+          <div class="metric">
+            <div class="label">Reward</div>
+            <div class="value" id="total-reward">0.0000</div>
+            <div class="sub" id="step-info">0 steps completed</div>
+          </div>
+          <div class="metric">
+            <div class="label">Latency</div>
+            <div class="value" id="perf-badge">0ms</div>
+            <div class="sub" id="latency-detail">Awaiting first request</div>
+          </div>
+          <div class="metric">
+            <div class="label">System</div>
+            <div class="value" id="status-badge">Online</div>
+            <div class="sub" id="uptime-badge">Uptime: --</div>
+          </div>
+        </div>
       </div>
-      <div class="btn-grid">
-        <button class="act-btn" id="btn-reply" onclick="sendAction('reply')" disabled>💬 Reply</button>
-        <button class="act-btn" id="btn-ask" onclick="sendAction('ask_details')" disabled>🔍 Ask Details</button>
-        <button class="act-btn" id="btn-refund" onclick="sendAction('refund')" disabled>💰 Refund</button>
-        <button class="act-btn" id="btn-escalate" onclick="sendAction('escalate')" disabled>🚨 Escalate</button>
+      <div class="hero-side">
+        <div class="panel">
+          <h2>Live Bench Summary</h2>
+          <div class="mini-grid">
+            <div class="rubric-item"><strong>Total Sessions</strong><span id="m-total-sessions">0</span></div>
+            <div class="rubric-item"><strong>Active Sessions</strong><span id="m-active-sessions">0</span></div>
+            <div class="rubric-item"><strong>Total Steps</strong><span id="m-total-steps">0</span></div>
+            <div class="rubric-item"><strong>Avg Response</strong><span id="m-avg-time">0ms</span></div>
+          </div>
+        </div>
+        <div class="panel">
+          <h2>Evaluation Focus</h2>
+          <ul class="feature-list">
+            <li>Deterministic intent detection keeps grading stable and testable.</li>
+            <li>Tone awareness adds realism without taking control of rewards or transitions.</li>
+            <li>Workflow guidance, rubric detail, and event logging make each run easier to inspect.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="shell-section content-grid">
+    <div class="panel">
+      <h2>Scenario Library</h2>
+      <p class="panel-copy">Each benchmark includes workflow expectations, difficulty, intent targets, and resolution rules. Start from a preset or load your own customer message.</p>
+      <div class="task-grid" id="task-grid"></div>
+      <div class="custom-box">
+        <h3>Custom Scenario</h3>
+        <p class="helper">Paste a customer issue and the environment will infer the closest workflow so you can test open-ended responses.</p>
+        <textarea id="custom-msg" placeholder="Example: My package is late, the product arrived damaged, and I need a refund."></textarea>
+        <div class="btn-row">
+          <button class="primary-btn" onclick="startCustomTask()">Start Custom Run</button>
+        </div>
       </div>
     </div>
 
-    <div class="state-bar">
-      <div>State: <span class="sv hi" id="s-state">—</span></div>
-      <div>Intent: <span class="sv" id="s-intent">—</span></div>
-      <div>Tone: <span class="sv" id="s-tone">—</span></div>
-      <div>Step: <span class="sv" id="s-step">0</span></div>
-      <div>Done: <span class="sv" id="s-done">No</span></div>
+    <div class="timeline">
+      <div class="timeline-card">
+        <h2 id="detail-title">Scenario Details</h2>
+        <p class="panel-copy" id="detail-description">Select a task to inspect its expected handling workflow, scoring, and operational notes.</p>
+        <div class="guide-box">
+          <div class="guide-label" id="step-num">Ready State</div>
+          <div class="guide-text" id="guide-text">Pick a benchmark and the interface will guide the next best action.</div>
+        </div>
+        <div class="shell-section">
+          <h3>Expected Workflow</h3>
+          <ul class="workflow-list" id="workflow-list"></ul>
+        </div>
+        <div class="shell-section">
+          <h3>Conversation Stream</h3>
+          <div class="messages" id="messages">
+            <div class="msg system">
+              <div class="msg-head"><div class="msg-role">System</div></div>
+              <div class="msg-body">Select a scenario from the library to launch a run. The chat, scoring, and workflow tracker will populate automatically.</div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
-  </div>
+
+    <div class="panel">
+      <h2>Run Console</h2>
+      <div class="state-grid">
+        <div class="state-item"><strong>Current State</strong><span id="s-state">--</span></div>
+        <div class="state-item"><strong>Detected Intent</strong><span id="s-intent">--</span></div>
+        <div class="state-item"><strong>Customer Tone</strong><span id="s-tone">--</span></div>
+        <div class="state-item"><strong>Episode Status</strong><span id="s-done">Not started</span></div>
+        <div class="state-item"><strong>Step Count</strong><span id="s-step">0</span></div>
+        <div class="state-item"><strong>Grade Snapshot</strong><span id="score-info">No grade yet</span></div>
+      </div>
+
+      <div class="shell-section">
+        <h3>Action Palette</h3>
+        <div class="actions-grid">
+          <button class="action-card" id="btn-reply" onclick="sendAction('reply')" disabled>
+            <strong>Reply</strong>
+            <span>Send a direct support response to acknowledge or close the issue.</span>
+          </button>
+          <button class="action-card" id="btn-ask" onclick="sendAction('ask_details')" disabled>
+            <strong>Ask Details</strong>
+            <span>Request the order number, proof, or extra context before resolving.</span>
+          </button>
+          <button class="action-card" id="btn-refund" onclick="sendAction('refund')" disabled>
+            <strong>Refund</strong>
+            <span>Process the monetary resolution when the workflow justifies it.</span>
+          </button>
+          <button class="action-card" id="btn-escalate" onclick="sendAction('escalate')" disabled>
+            <strong>Escalate</strong>
+            <span>Route the issue onward if the current agent should not own the resolution.</span>
+          </button>
+        </div>
+        <div class="composer">
+          <textarea id="msg-input" placeholder="Compose the agent reply here. A typed message is required when you choose Reply."></textarea>
+          <div class="composer-note">Tip: use empathetic acknowledgment first for angry customers, then move into details or resolution.</div>
+        </div>
+      </div>
+
+      <div class="shell-section">
+        <h3>Task Brief</h3>
+        <ul class="feature-list" id="brief-list"></ul>
+      </div>
+
+      <div class="shell-section">
+        <h3>Run Events</h3>
+        <div class="event-list" id="event-log"></div>
+      </div>
+    </div>
+  </section>
 </div>
 
 <script>
-let sessionId = null;
-let isDone = false;
-let stepNum = 0;
-
-// Guided instructions per task
-const GUIDES = {
-  easy: [
-    "Step 1: Click 'Ask Details' to request the order number",
-    "Step 2: Click 'Reply' with tracking information to resolve",
-    "✅ Task complete!"
-  ],
-  medium: [
-    "Step 1: Click 'Ask Details' to collect refund information",
-    "Step 2: Click 'Ask Details' again to validate the claim",
-    "Step 3: Click 'Refund' to process the refund",
-    "✅ Task complete!"
-  ],
-  hard: [
-    "Step 1: Click 'Reply' to acknowledge the angry customer",
-    "Step 2: Click 'Ask Details' to gather issue information",
-    "Step 3: Click 'Refund' to resolve the product issue",
-    "Step 4: Click 'Reply' to finalize and close",
-    "✅ Task complete!"
-  ]
+const TASK_DATA = __TASK_DATA__;
+const ACTION_LABELS = {
+  reply: "Reply to the customer with guidance or closure",
+  ask_details: "Ask for supporting order or issue details",
+  refund: "Issue a refund or reimbursement",
+  escalate: "Escalate to a specialized queue"
 };
 
-let currentTask = 'easy';
+let sessionId = null;
+let currentTask = "easy";
+let stepNum = 0;
+let isDone = false;
+let metricsTimer = null;
 
-function showCustomTab(btn) {
-  document.querySelectorAll('.task-btn').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  const area = document.getElementById('custom-input-area');
-  area.style.display = area.style.display === 'none' ? 'flex' : 'none';
+function titleCase(value) {
+  return String(value || "--").replace(/_/g, " ").replace(/\\b\\w/g, c => c.toUpperCase());
 }
 
-async function startCustomTask() {
-  const msg = document.getElementById('custom-msg').value.trim();
-  if (!msg) {
-    alert('Please type your problem first.');
-    return;
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function workflowGuide(task) {
+  if (!task || !Array.isArray(task.expected_workflow)) {
+    return ["Follow the environment workflow carefully."];
   }
-  document.getElementById('custom-input-area').style.display = 'none';
-  currentTask = 'custom';
-  stepNum = 0;
-  isDone = false;
+  return task.expected_workflow.map((action, index) => {
+    return "Step " + (index + 1) + ": " + ACTION_LABELS[action];
+  }).concat(["Run complete: review grade and event log."]);
+}
 
+function renderTaskCards() {
+  const grid = document.getElementById("task-grid");
+  grid.innerHTML = "";
+  Object.values(TASK_DATA).forEach((task) => {
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "task-card" + (task.id === currentTask ? " active" : "");
+    card.onclick = () => startTask(task.id);
+    card.innerHTML = `
+      <div class="task-top">
+        <div>
+          <div class="task-name">${escapeHtml(task.name)}</div>
+          <div class="task-desc">${escapeHtml(task.description || "Scenario details not provided.")}</div>
+        </div>
+        <span class="task-chip ${escapeHtml(task.difficulty)}">${escapeHtml(task.difficulty)}</span>
+      </div>
+      <div class="task-meta">
+        <span class="micro">Intent: ${escapeHtml(titleCase(task.expected_intent))}</span>
+        <span class="micro">Steps: ${escapeHtml(task.expected_workflow.length)} / max ${escapeHtml(task.max_steps)}</span>
+        <span class="micro">Finish: ${escapeHtml(titleCase(task.success_condition))}</span>
+      </div>
+    `;
+    grid.appendChild(card);
+  });
+}
+
+function renderTaskDetails(taskId) {
+  const task = TASK_DATA[taskId];
+  const detailTitle = document.getElementById("detail-title");
+  const detailDescription = document.getElementById("detail-description");
+  const workflowList = document.getElementById("workflow-list");
+  const briefList = document.getElementById("brief-list");
+
+  if (!task) return;
+
+  detailTitle.textContent = task.name + " Overview";
+  detailDescription.textContent = task.description || "No description available.";
+  workflowList.innerHTML = "";
+  briefList.innerHTML = "";
+
+  task.expected_workflow.forEach((action, index) => {
+    const li = document.createElement("li");
+    li.className = "workflow-step" + (index < stepNum ? " done" : index === stepNum && !isDone ? " active" : "");
+    li.innerHTML = `
+      <div class="step-index">${index + 1}</div>
+      <div class="step-copy">
+        <span>${escapeHtml(titleCase(action))}</span>
+        <small>${escapeHtml(ACTION_LABELS[action] || "Take the appropriate next action.")}</small>
+      </div>
+    `;
+    workflowList.appendChild(li);
+  });
+
+  const items = [
+    "Initial customer message: " + task.initial_message,
+    "Expected intent: " + titleCase(task.expected_intent),
+    "Resolution target: " + titleCase(task.success_condition),
+    "Scoring rubric: full " + task.scoring.full_score + ", partial " + task.scoring.partial_score + ", fail " + task.scoring.fail_score
+  ];
+
+  if (task.multi_intent && task.multi_intent.length) {
+    items.push("Multi-intent coverage: " + task.multi_intent.map(titleCase).join(", "));
+  }
+  if (task.requires_tone_handling) {
+    items.push("Tone handling matters here: the agent should acknowledge customer emotion before resolving.");
+  }
+
+  items.forEach((copy) => {
+    const li = document.createElement("li");
+    li.textContent = copy;
+    briefList.appendChild(li);
+  });
+}
+
+function setButtons(disabled) {
+  ["btn-reply", "btn-ask", "btn-refund", "btn-escalate"].forEach((id) => {
+    document.getElementById(id).disabled = disabled;
+    document.getElementById(id).classList.remove("active-suggestion");
+  });
+}
+
+function setSuggestedAction(action) {
+  const mapping = {
+    reply: "btn-reply",
+    ask_details: "btn-ask",
+    refund: "btn-refund",
+    escalate: "btn-escalate"
+  };
+  Object.values(mapping).forEach((id) => document.getElementById(id).classList.remove("active-suggestion"));
+  if (mapping[action]) {
+    document.getElementById(mapping[action]).classList.add("active-suggestion");
+  }
+}
+
+function updateGuide() {
+  const task = TASK_DATA[currentTask];
+  const guide = workflowGuide(task);
+  const idx = Math.min(stepNum, Math.max(guide.length - 1, 0));
+  const nextAction = task && task.expected_workflow ? task.expected_workflow[Math.min(stepNum, task.expected_workflow.length - 1)] : null;
+  document.getElementById("step-num").textContent = isDone ? "Run Complete" : "Guided Step " + (Math.min(stepNum + 1, task.expected_workflow.length || 1));
+  document.getElementById("guide-text").textContent = guide[idx] || "Follow the benchmark workflow.";
+  if (!isDone && nextAction) {
+    setSuggestedAction(nextAction);
+  }
+  renderTaskDetails(currentTask);
+}
+
+function resetRunUi(taskLabel) {
+  document.getElementById("messages").innerHTML = "";
+  document.getElementById("event-log").innerHTML = "";
+  document.getElementById("total-reward").textContent = "0.0000";
+  document.getElementById("step-info").textContent = "0 steps completed";
+  document.getElementById("score-info").textContent = "No grade yet";
+  document.getElementById("session-badge").textContent = "Starting run...";
+  document.getElementById("task-badge").textContent = taskLabel;
+  document.getElementById("msg-input").value = "";
+  setButtons(false);
+  addEvent("Session", "Preparing a fresh environment run for " + taskLabel + ".", "Waiting for reset response");
+}
+
+function addEvent(title, body, detail) {
+  const box = document.getElementById("event-log");
+  const div = document.createElement("div");
+  div.className = "event-card";
+  div.innerHTML = `<strong>${escapeHtml(title)}</strong><span>${escapeHtml(body)}</span>${detail ? `<small>${escapeHtml(detail)}</small>` : ""}`;
+  box.prepend(div);
+}
+
+function addMsg(type, title, body, meta) {
+  const div = document.createElement("div");
+  div.className = "msg " + type;
+  div.innerHTML = `
+    <div class="msg-head">
+      <div class="msg-role">${escapeHtml(title)}</div>
+    </div>
+    <div class="msg-body">${escapeHtml(body)}</div>
+    ${meta ? `<div class="msg-meta">${meta}</div>` : ""}
+  `;
+  const box = document.getElementById("messages");
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+}
+
+function updateStateBar(obs, done) {
+  document.getElementById("s-state").textContent = titleCase(obs.current_state);
+  document.getElementById("s-intent").textContent = titleCase(obs.intent);
+  document.getElementById("s-tone").textContent = titleCase(obs.sentiment);
+  document.getElementById("s-step").textContent = obs.step_count;
+  document.getElementById("s-done").textContent = done ? "Completed" : "In progress";
+}
+
+function updatePerfBadge(durationMs) {
+  document.getElementById("perf-badge").textContent = durationMs + "ms";
+  document.getElementById("latency-detail").textContent = durationMs < 100 ? "Excellent response time" : durationMs < 500 ? "Stable response time" : "Slow response path";
+}
+
+function updateStatusBadge(online, uptime) {
+  const badge = document.getElementById("status-badge");
+  badge.textContent = online ? "Online" : "Offline";
+  badge.className = online ? "badge pill-online" : "badge pill-offline";
+  document.getElementById("uptime-badge").textContent = uptime ? "Uptime: " + uptime + "s" : "Uptime: --";
+}
+
+async function refreshMetrics() {
   try {
-    const startTime = performance.now();
-    const res = await fetch('/custom_reset', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({message: msg})
-    });
-    const data = await res.json();
-    const duration = Math.round(performance.now() - startTime);
-    updatePerfBadge(duration);
-    
-    sessionId = data.session_id;
-
-    document.getElementById('messages').innerHTML = '';
-    document.getElementById('total-reward').textContent = '0.0000';
-    document.getElementById('step-info').textContent = 'Steps: 0';
-    document.getElementById('score-info').textContent = '';
-    document.getElementById('session-badge').textContent = 'ID: ' + sessionId.slice(0,8);
-    document.getElementById('task-badge').textContent = 'CUSTOM';
-    document.getElementById('msg-input').value = '';
-    setButtons(false);
-
-    const obs = data.observation;
-    addMsg('customer', '🧑 Customer: ' + obs.customer_message,
-      'Intent: ' + obs.intent + ' | Tone: ' + obs.sentiment + ' | Urgency: ' + obs.urgency_level + ' | Processed in ' + (data.processing_time_ms || 0) + 'ms');
-    updateStateBar(obs, false);
-    document.getElementById('guide-text').textContent = 'Custom problem loaded — use the action buttons to respond';
-    document.getElementById('step-num').textContent = 'Step 1';
-  } catch(e) {
-    addMsg('error-msg', '❌ Failed to start custom session.');
+    const [metricsRes, healthRes] = await Promise.all([fetch("/metrics"), fetch("/health")]);
+    if (!metricsRes.ok || !healthRes.ok) throw new Error("metrics unavailable");
+    const metrics = await metricsRes.json();
+    const health = await healthRes.json();
+    document.getElementById("m-total-sessions").textContent = metrics.total_sessions;
+    document.getElementById("m-active-sessions").textContent = metrics.active_sessions;
+    document.getElementById("m-total-steps").textContent = metrics.total_steps;
+    document.getElementById("m-avg-time").textContent = metrics.avg_response_time_ms + "ms";
+    updateStatusBadge(true, health.uptime_seconds);
+  } catch (err) {
     updateStatusBadge(false);
   }
 }
 
-async function startTask(taskId, btn) {
-  document.querySelectorAll('.task-btn').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
+async function startTask(taskId) {
+  const task = TASK_DATA[taskId];
   currentTask = taskId;
   stepNum = 0;
   isDone = false;
+  renderTaskCards();
+  renderTaskDetails(taskId);
+  resetRunUi(task.name);
 
   try {
-    const startTime = performance.now();
-    const res = await fetch('/reset', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
+    const started = performance.now();
+    const res = await fetch("/reset", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
       body: JSON.stringify({task_id: taskId})
     });
     const data = await res.json();
-    const duration = Math.round(performance.now() - startTime);
-    updatePerfBadge(duration);
-    
-    sessionId = data.session_id;
+    updatePerfBadge(Math.round(performance.now() - started));
 
-    // Reset UI
-    document.getElementById('messages').innerHTML = '';
-    document.getElementById('total-reward').textContent = '0.0000';
-    document.getElementById('step-info').textContent = 'Steps: 0';
-    document.getElementById('score-info').textContent = '';
-    document.getElementById('session-badge').textContent = 'ID: ' + sessionId.slice(0,8);
-    document.getElementById('task-badge').textContent = taskId.toUpperCase();
-    document.getElementById('msg-input').value = '';
-    setButtons(false);
-    updateGuide();
+    sessionId = data.session_id;
+    document.getElementById("session-badge").textContent = "Run " + sessionId.slice(0, 8);
+    document.getElementById("task-badge").textContent = task.name + " • " + titleCase(task.difficulty);
 
     const obs = data.observation;
-    addMsg('customer', '🧑 Customer: ' + obs.customer_message,
-      'Intent: ' + obs.intent + ' | Tone: ' + obs.sentiment + ' | Urgency: ' + obs.urgency_level + ' | Processed in ' + (data.processing_time_ms || 0) + 'ms');
+    addMsg("customer", "Customer", obs.customer_message, "Intent " + titleCase(obs.intent) + " • Tone " + titleCase(obs.sentiment) + " • Urgency " + titleCase(obs.urgency_level));
+    addMsg("system", "System", "Scenario initialized. Follow the highlighted workflow step and inspect the event log for deeper detail.", "Reset processed in " + (data.processing_time_ms || 0) + "ms");
+    addEvent("Reset complete", "Loaded " + task.name + ".", "Session " + sessionId);
     updateStateBar(obs, false);
-    addMsg('system', '👆 Follow the guide above. Use the action buttons below.');
-  } catch(e) {
-    addMsg('error-msg', '❌ Failed to connect to server. Make sure the server is running.');
+    refreshMetrics();
+    updateGuide();
+  } catch (err) {
+    addMsg("error-msg", "System error", "Failed to start the selected benchmark.", "Check whether the FastAPI server is reachable.");
+    addEvent("Network issue", "Could not reset the task.", "Server may be offline");
+    updateStatusBadge(false);
+  }
+}
+
+async function startCustomTask() {
+  const rawMessage = document.getElementById("custom-msg").value.trim();
+  if (!rawMessage) {
+    addMsg("error-msg", "Input needed", "Enter a customer problem before starting a custom run.");
+    return;
+  }
+
+  currentTask = "easy";
+  stepNum = 0;
+  isDone = false;
+  renderTaskCards();
+  renderTaskDetails("easy");
+  resetRunUi("Custom scenario");
+
+  try {
+    const started = performance.now();
+    const res = await fetch("/custom_reset", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({message: rawMessage})
+    });
+    const data = await res.json();
+    updatePerfBadge(Math.round(performance.now() - started));
+
+    sessionId = data.session_id;
+    document.getElementById("session-badge").textContent = "Run " + sessionId.slice(0, 8);
+    document.getElementById("task-badge").textContent = "Custom scenario • adaptive workflow";
+
+    const obs = data.observation;
+    addMsg("customer", "Customer", obs.customer_message, "Intent " + titleCase(obs.intent) + " • Tone " + titleCase(obs.sentiment) + " • Urgency " + titleCase(obs.urgency_level));
+    addMsg("system", "System", "Custom scenario initialized. The backend mapped your message into a dynamic task flow.", "Reset processed in " + (data.processing_time_ms || 0) + "ms");
+    addEvent("Custom run", "Created a session from your own scenario text.", "Detected intent: " + titleCase(obs.intent));
+    updateStateBar(obs, false);
+    document.getElementById("detail-title").textContent = "Custom Scenario Overview";
+    document.getElementById("detail-description").textContent = "This run was generated dynamically from the message you entered. Use the event log and state panel to infer the best next step.";
+    document.getElementById("workflow-list").innerHTML = '<li class="workflow-step active"><div class="step-index">1</div><div class="step-copy"><span>Adaptive workflow</span><small>The environment will score your sequence against the inferred support path.</small></div></li>';
+    document.getElementById("brief-list").innerHTML = '<li>Custom session uses inferred intent detection and an auto-generated expected workflow.</li>';
+    document.getElementById("guide-text").textContent = "Custom scenario active. Start with the action that best acknowledges or clarifies the customer issue.";
+    document.getElementById("step-num").textContent = "Adaptive Run";
+    refreshMetrics();
+  } catch (err) {
+    addMsg("error-msg", "System error", "Failed to start the custom scenario.");
+    addEvent("Network issue", "Could not initialize the custom run.", "Server may be offline");
     updateStatusBadge(false);
   }
 }
@@ -558,199 +966,108 @@ async function startTask(taskId, btn) {
 async function sendAction(actionType) {
   if (!sessionId || isDone) return;
 
-  const inputEl = document.getElementById('msg-input');
+  const inputEl = document.getElementById("msg-input");
   const content = inputEl.value.trim();
-
-  console.log("Sending:", actionType, content);
-
-  // Require content for reply
-  if (actionType === 'reply' && !content) {
-    addMsg('error-msg', '⚠️ Please enter a message in the input box before clicking Reply.');
+  if (actionType === "reply" && !content) {
+    addMsg("error-msg", "Reply required", "Type a support response before sending the Reply action.");
     inputEl.focus();
     return;
   }
 
-  setButtons(true); // disable during request
+  setButtons(true);
 
   try {
-    const startTime = performance.now();
-    const payload = {session_id: sessionId, action_type: actionType, content: content};
-    console.log("Payload:", JSON.stringify(payload));
-    const res = await fetch('/step', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify(payload)
+    const started = performance.now();
+    const res = await fetch("/step", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({
+        session_id: sessionId,
+        action_type: actionType,
+        content: content
+      })
     });
-    const duration = Math.round(performance.now() - startTime);
-    updatePerfBadge(duration);
+    updatePerfBadge(Math.round(performance.now() - started));
 
     if (!res.ok) {
       const err = await res.json();
-      addMsg('error-msg', '❌ Error: ' + (err.detail || 'Unknown error'));
+      addMsg("error-msg", "Action rejected", err.detail || "The environment rejected the action.");
+      addEvent("Action rejected", titleCase(actionType) + " was not accepted.", err.detail || "Unknown error");
       setButtons(false);
       return;
     }
 
     const data = await res.json();
-    inputEl.value = '';  // clear input after successful send
+    inputEl.value = "";
 
     const obs = data.observation;
     const reward = data.reward;
     const done = data.done;
-    const info = data.info;
-    const isValid = info.valid;
-    const agentResponse = info.agent_response || '';
-    const procTime = obs.processing_time_ms || 0;
+    const info = data.info || {};
+    const valid = Boolean(info.valid);
+    const rewardText = (reward >= 0 ? "+" : "") + reward.toFixed(4);
+    const meta = "Reward " + rewardText + " • Next state " + titleCase(info.next_state || obs.current_state) + " • " + (obs.processing_time_ms || 0) + "ms";
 
-    const rewardClass = reward >= 0 ? 'pos' : 'neg';
-    const rewardSign = reward >= 0 ? '+' : '';
-    const validIcon = isValid ? '✅' : '❌';
-
-    // Show agent response as chat bubble
-    if (actionType === 'reply' && content) {
-      // User typed a reply — show their text
-      addMsg('agent', '🧑‍💼 You replied: ' + content,
-        validIcon + ' REPLY | Reward: <span class="reward-badge ' + rewardClass + '">' + rewardSign + reward.toFixed(4) + '</span> | → ' + info.next_state + ' | ' + procTime + 'ms');
+    if (actionType === "reply") {
+      addMsg("agent", "Agent reply", content, meta);
     } else {
-      // Show logic-driven response from backend
-      addMsg('agent', '🤖 Support: ' + agentResponse,
-        validIcon + ' ' + actionType.toUpperCase() + ' | Reward: <span class="reward-badge ' + rewardClass + '">' + rewardSign + reward.toFixed(4) + '</span> | → ' + info.next_state + ' | ' + procTime + 'ms');
+      addMsg("agent", titleCase(actionType), info.agent_response || "Action processed by backend workflow.", meta);
     }
 
-    if (!isValid) {
-      addMsg('error-msg', '❌ Invalid action in current state. Try a different action.');
+    if (!valid) {
+      addMsg("error-msg", "Validation warning", "That action was not valid for the current state.");
+    }
+    if (info.error && valid) {
+      addMsg("error-msg", "Processing note", info.error);
     }
 
-    if (info.error && isValid) {
-      addMsg('error-msg', '⚠️ ' + info.error);
-    }
+    addEvent(
+      titleCase(actionType),
+      (valid ? "Accepted" : "Marked invalid") + " with reward " + rewardText + ".",
+      "Current state: " + titleCase(obs.current_state)
+    );
 
-    // Update reward display
-    const stateRes = await fetch('/state?session_id=' + sessionId);
+    const stateRes = await fetch("/state?session_id=" + encodeURIComponent(sessionId));
     const stateData = await stateRes.json();
-    document.getElementById('total-reward').textContent = stateData.total_reward.toFixed(4);
-    document.getElementById('step-info').textContent = 'Steps: ' + obs.step_count;
+    document.getElementById("total-reward").textContent = stateData.total_reward.toFixed(4);
+    document.getElementById("step-info").textContent = obs.step_count + " steps completed";
 
     updateStateBar(obs, done);
-    stepNum++;
-    updateGuide();
+    stepNum += 1;
+    isDone = done;
 
     if (done) {
-      isDone = true;
-      const endMsg = info.message || 'Episode ended';
-      addMsg('success', '🏁 ' + endMsg);
+      addMsg("success", "Run finished", info.message || "The episode reached a terminal state.");
+      addEvent("Run complete", "Episode ended after " + obs.step_count + " steps.", "Final reward: " + stateData.total_reward.toFixed(4));
 
       if (data.grade) {
         const g = data.grade;
-        const emoji = g.label === 'full' ? '🏆' : g.label === 'partial' ? '⚡' : '❌';
-        addMsg('success',
-          emoji + ' Grade: ' + g.label.toUpperCase() +
-          ' | Score: ' + g.final_score +
-          ' | Raw: ' + g.raw_score +
-          ' | Total Reward: ' + g.total_reward
-        );
-        document.getElementById('score-info').textContent = emoji + ' Score: ' + g.final_score + ' (' + g.label + ')';
+        document.getElementById("score-info").textContent = titleCase(g.label) + " • " + g.final_score;
+        addMsg("success", "Grade summary", "Label " + g.label.toUpperCase() + " with final score " + g.final_score + ".", "Raw score " + g.raw_score + " • Total reward " + g.total_reward);
       }
-
-      document.getElementById('guide-text').textContent = GUIDES[currentTask][GUIDES[currentTask].length - 1];
-      document.getElementById('step-num').textContent = 'DONE';
     } else {
       setButtons(false);
     }
-  } catch(e) {
-    addMsg('error-msg', '❌ Network error. Is the server running?');
-    inputEl.value = '';
+
+    refreshMetrics();
+    updateGuide();
+  } catch (err) {
+    addMsg("error-msg", "Network issue", "Could not send the action to the server.");
+    addEvent("Network issue", "Action request failed before completion.", "Server may be offline");
+    inputEl.value = "";
     setButtons(false);
     updateStatusBadge(false);
   }
 }
 
-function updateGuide() {
-  const guides = GUIDES[currentTask] || [];
-  const idx = Math.min(stepNum, guides.length - 2);
-  const text = guides[idx] || 'Follow the workflow';
-  document.getElementById('guide-text').textContent = text;
-  document.getElementById('step-num').textContent = 'Step ' + (idx + 1);
-
-  // Highlight suggested button
-  document.querySelectorAll('.act-btn').forEach(b => b.classList.remove('highlight'));
-  if (text.includes('Reply')) document.getElementById('btn-reply').classList.add('highlight');
-  else if (text.includes('Ask Details')) document.getElementById('btn-ask').classList.add('highlight');
-  else if (text.includes('Refund')) document.getElementById('btn-refund').classList.add('highlight');
-  else if (text.includes('Escalate')) document.getElementById('btn-escalate').classList.add('highlight');
-}
-
-function addMsg(type, text, meta) {
-  const div = document.createElement('div');
-  div.className = 'msg ' + type;
-  div.innerHTML = '<div>' + text + '</div>' + (meta ? '<div class="meta">' + meta + '</div>' : '');
-  const box = document.getElementById('messages');
-  box.appendChild(div);
-  box.scrollTop = box.scrollHeight;
-}
-
-function updateStateBar(obs, done) {
-  document.getElementById('s-state').textContent = obs.current_state;
-  document.getElementById('s-intent').textContent = obs.intent;
-  document.getElementById('s-tone').textContent = obs.sentiment;
-  document.getElementById('s-step').textContent = obs.step_count;
-  document.getElementById('s-done').textContent = done ? 'Yes ✅' : 'No';
-}
-
-function setButtons(disabled) {
-  ['btn-reply','btn-ask','btn-refund','btn-escalate'].forEach(id => {
-    document.getElementById(id).disabled = disabled;
-  });
-}
-
-function updatePerfBadge(durationMs) {
-  const badge = document.getElementById('perf-badge');
-  badge.textContent = '⚡ ' + durationMs + 'ms';
-  if (durationMs < 100) {
-    badge.style.background = '#1e4a1e';
-    badge.style.color = '#6fcf97';
-  } else if (durationMs < 500) {
-    badge.style.background = '#4a3a1e';
-    badge.style.color = '#f0c674';
-  } else {
-    badge.style.background = '#4a1e1e';
-    badge.style.color = '#ff8080';
-  }
-}
-
-function updateStatusBadge(online) {
-  const badge = document.getElementById('status-badge');
-  if (online) {
-    badge.textContent = '● Online';
-    badge.style.background = '#1e4a1e';
-    badge.style.color = '#6fcf97';
-  } else {
-    badge.textContent = '● Offline';
-    badge.style.background = '#4a1e1e';
-    badge.style.color = '#ff8080';
-  }
-}
-
-// Auto-start easy task on load
-window.onload = () => {
-  const btn = document.querySelector('.task-btn.active');
-  if (btn) startTask('easy', btn);
-  
-  // Check server health periodically
-  setInterval(async () => {
-    try {
-      const res = await fetch('/health');
-      if (res.ok) {
-        updateStatusBadge(true);
-      } else {
-        updateStatusBadge(false);
-      }
-    } catch(e) {
-      updateStatusBadge(false);
-    }
-  }, 10000); // Check every 10 seconds
-};
+window.addEventListener("load", async () => {
+  renderTaskCards();
+  renderTaskDetails(currentTask);
+  await refreshMetrics();
+  await startTask("easy");
+  metricsTimer = setInterval(refreshMetrics, 10000);
+});
 </script>
 </body>
 </html>
-"""
+""".replace("__TASK_DATA__", json.dumps(task_payload))
