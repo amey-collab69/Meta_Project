@@ -143,10 +143,14 @@ def run_task(task_id: str, client: Optional[OpenAI]) -> None:
                 break
 
         if not observation.get("done", False):
-            score = sum(rewards) / max(len(rewards), 1)
+            if rewards:
+                score = sum(rewards) / len(rewards)
+                score = round(min(0.99, max(0.01, score)), 4)
+            else:
+                score = 0.01
             success = False
 
-        rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+        rewards_str = ",".join(f"{r:.2f}" for r in rewards) if rewards else "0.01"
         print(
             f"[END] success={format_bool(success)} steps={len(rewards)} score={score:.2f} rewards={rewards_str}",
             flush=True,
@@ -155,11 +159,11 @@ def run_task(task_id: str, client: Optional[OpenAI]) -> None:
         if session_id is None:
             session_id = "unknown"
         print(
-            f"[STEP] step=1 action=none reward=0.00 done=false error={safe_str(str(exc))}",
+            f"[STEP] step=1 action=none reward=0.01 done=false error={safe_str(str(exc))}",
             flush=True,
         )
         print(
-            f"[END] success=false steps={len(rewards)} score=0.00 rewards={','.join(f'{r:.2f}' for r in rewards)}",
+            f"[END] success=false steps=0 score=0.01 rewards=0.01",
             flush=True,
         )
 
