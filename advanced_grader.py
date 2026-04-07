@@ -139,12 +139,12 @@ class AdvancedGrader:
             criteria_scores["multi_issue_handling"] = 0.5 + (min(1.0, len(action_set) / 4.0) * 0.5)
         
         if "appropriate_response" in rubric.criteria:
-            criteria_scores["appropriate_response"] = 0.75 + (reward_score * 0.25)
+            criteria_scores["appropriate_response"] = min(0.99, 0.75 + (reward_score * 0.24))
         
         if "follow_up" in rubric.criteria:
             # Best practices for follow-up
             has_followup = "reply" in action_history and len(action_history) > 3
-            criteria_scores["follow_up"] = 1.0 if has_followup else 0.3
+            criteria_scores["follow_up"] = 0.99 if has_followup else 0.3
         
         # Calculate weighted score
         final_score = 0.0
@@ -202,40 +202,41 @@ class AdvancedGrader:
     def _score_sequence(self, action_history: List[str], expected: List[str]) -> float:
         """Score how well the action sequence matches expected."""
         if not expected:
-            return 1.0
+            return 0.99
         
         matched = self._count_sequence_match(action_history, expected)
-        return round(matched / len(expected), 3)
+        ratio = matched / len(expected)
+        return round(min(0.99, max(0.01, ratio)), 3)
     
     def _score_efficiency(self, actual_steps: int, max_steps: int) -> float:
         """Score efficiency based on step count."""
         if actual_steps == 0:
-            return 1.0
+            return 0.99
         
         # Optimal is around 50% of max steps
         optimal = max_steps * 0.5
         
         if actual_steps <= optimal:
-            return 1.0  # Perfect efficiency
+            return 0.99  # Near-perfect efficiency
         
         # Linearly decrease efficiency
         excess = actual_steps - optimal
         max_excess = max_steps - optimal
         penalty = (excess / max_excess) * 0.6
         
-        return round(max(0.0, 1.0 - penalty), 3)
+        return round(max(0.01, 1.0 - penalty), 3)
     
     def _score_tone_handling(self, tone: str, requires_handling: bool) -> float:
         """Score tone handling capability."""
         if not requires_handling:
-            return 1.0  # Not required
+            return 0.99  # Not required
         
         if tone == "angry":
             return 0.5  # Detected but challenging
         elif tone == "complaint":
             return 0.7  # Good identification
         else:
-            return 1.0  # Neutral/positive
+            return 0.99  # Neutral/positive
     
     def _count_sequence_match(self, action_history: List[str], expected: List[str]) -> int:
         """Count matching actions in order."""
