@@ -7,6 +7,7 @@ from openai import OpenAI
 # Environment variables ONLY — no defaults, no fallbacks
 API_BASE_URL = os.environ.get("API_BASE_URL")
 API_KEY = os.environ.get("API_KEY")
+ENV_URL = "http://localhost:7860"
 MODEL_NAME = "gpt-4o-mini"
 BENCHMARK = "supportai-env"
 TASK_IDS = ["easy", "medium", "hard"]
@@ -79,7 +80,7 @@ def run_task(task_id: str, client: OpenAI) -> None:
     try:
         # Reset
         reset_resp = requests.post(
-            f"{API_BASE_URL}/reset",
+            f"{ENV_URL}/reset",
             json={"task_id": task_id},
             timeout=15,
         )
@@ -99,7 +100,7 @@ def run_task(task_id: str, client: OpenAI) -> None:
 
             # Execute step
             step_resp = requests.post(
-                f"{API_BASE_URL}/step",
+                f"{ENV_URL}/step",
                 json={
                     "session_id": session_id,
                     "action_type": action_type,
