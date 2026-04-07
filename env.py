@@ -252,13 +252,21 @@ def detect_tone(message: str, use_cache: bool = True) -> str:
     # Enhanced rule-based detection
     rule_tone = _enhanced_rule_based_tone(msg)
 
-    api_key = os.getenv("OPENAI_API_KEY", "")
+    # Use OpenEnv-provided API credentials or fallback to environment
+    api_key = os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY", "")
+    base_url = os.getenv("API_BASE_URL")
+    
     if not api_key:
         _tone_cache[msg] = (rule_tone, time.time())
         return rule_tone
 
     try:
-        client = OpenAI(api_key=api_key, timeout=3.0)  # 3 second timeout
+        # Initialize OpenAI client with OpenEnv proxy if provided
+        if base_url:
+            client = OpenAI(api_key=api_key, base_url=base_url, timeout=3.0)
+        else:
+            client = OpenAI(api_key=api_key, timeout=3.0)
+        
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
