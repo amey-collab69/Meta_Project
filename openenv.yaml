@@ -43,7 +43,7 @@ observation_space:
     step_count: integer
     conversation_history: array
 
-reward_range: [-1.0, 1.0]
+reward_range: [0.0, 1.0]
 score_range: [0.0, 1.0]
 
 features:

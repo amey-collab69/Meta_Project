@@ -84,6 +84,19 @@ docker run -p 7860:7860 supportai-env
 ### Hugging Face Spaces
 This project is configured for deployment on Hugging Face Spaces with Docker runtime.
 
+## Baseline Inference
+Run the baseline agent with:
+```bash
+API_BASE_URL=http://localhost:7860 MODEL_NAME=gpt-3.5-turbo HF_TOKEN=<your-key> python inference.py
+```
+
+The baseline script executes the three benchmark tasks (`easy`, `medium`, `hard`) and emits structured stdout logs in the required `[START]`, `[STEP]`, `[END]` format.
+
+## Environment Variables
+- `API_BASE_URL` — endpoint for the environment or OpenAI proxy
+- `MODEL_NAME` — model to use for inference
+- `HF_TOKEN` — Hugging Face/OpenAI API key used by `openai.OpenAI`
+
 ## Tech Stack
 
 - **Backend**: FastAPI + Uvicorn

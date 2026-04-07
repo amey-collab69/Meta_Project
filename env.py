@@ -515,8 +515,9 @@ class SupportEnv:
         
         # Validate action type
         if act not in VALID_ACTIONS:
+            self._step_count += 1
             processing_time = (time.time() - start_time) * 1000
-            return self._obs, -0.5, False, {
+            return self._obs, 0.01, False, {
                 "error": f"Invalid action type '{act}'. Must be one of: {VALID_ACTIONS}",
                 "valid": False,
                 "next_state": self._current_state,
