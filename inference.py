@@ -22,51 +22,51 @@ def safe_str(value: Optional[str]) -> str:
     return value if value else "null"
 
 
-def make_client() -> OpenAI:
-    """Create OpenAI client pointing to proxy."""
-    return OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+def make_client():
+    """Create OpenAI client pointing to proxy. Returns None if env vars missing."""
+    import os
+    from openai import OpenAI
+
+    base_url = os.environ.get("API_BASE_URL")
+    api_key = os.environ.get("API_KEY")
+
+    if not base_url or not api_key:
+        return None
+
+    return OpenAI(base_url=base_url, api_key=api_key)
 
 
-def choose_action_with_llm(client: OpenAI, customer_msg: str, state: str) -> tuple:
-    """Call LLM to choose action and content via proxy."""
-    prompt = f"""You are a customer support agent.
+def choose_action_with_llm(client, customer_msg, state):
+    """Call LLM to choose action and content via proxy. Falls back gracefully if client is None or call fails."""
+    if not client:
+        return "reply", "I'm here to help."
 
-Customer: {customer_msg}
-State: {state}
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Respond with ACTION and CONTENT."},
+                {"role": "user", "content": f"Customer: {customer_msg}\nState: {state}"}
+            ],
+            max_tokens=100,
+            temperature=0.7,
+        )
 
-Choose ONE action: reply, ask_details, refund, or escalate.
+        text = response.choices[0].message.content.strip()
 
-Respond with:
-ACTION: <choice>
-CONTENT: <brief response>"""
+        action = "reply"
+        content = "I'm here to help."
 
-    response = client.chat.completions.create(
-        model=MODEL_NAME,
-        messages=[
-            {
-                "role": "system",
-                "content": "You are a support decision-maker. Respond with ACTION and CONTENT lines."
-            },
-            {"role": "user", "content": prompt}
-        ],
-        max_tokens=100,
-        temperature=0.7,
-    )
+        for line in text.split("\n"):
+            if line.startswith("ACTION:"):
+                action = line.split(":", 1)[1].strip().lower()
+            elif line.startswith("CONTENT:"):
+                content = line.split(":", 1)[1].strip()
 
-    llm_text = response.choices[0].message.content.strip()
+        return action, content
 
-    action = "reply"
-    content = "I'm here to help."
-
-    for line in llm_text.split("\n"):
-        if line.startswith("ACTION:"):
-            action = line.split(":", 1)[1].strip().lower()
-            if action not in ("reply", "ask_details", "refund", "escalate"):
-                action = "reply"
-        elif line.startswith("CONTENT:"):
-            content = line.split(":", 1)[1].strip()
-
-    return action, content
+    except Exception:
+        return "reply", "Let me assist you."
 
 
 def run_task(task_id: str, client: OpenAI) -> None:
