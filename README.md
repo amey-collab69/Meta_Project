@@ -8,176 +8,102 @@ app_file: main.py
 pinned: false
 ---
 
-# 🚀 SupportAI-Env – Ultimate Customer Support AI Training Dashboard
+# 🚀 SupportAI-Env
 
-[![Modern Dashboard](https://img.shields.io/badge/UI-Killer%20Dashboard-007ACC?style=for-the-badge&logo=tailwindcss)](http://localhost:7860)
-[![FastAPI](https://img.shields.io/badge/FastAPI-v0.111-green?style=for-the-badge&logo=fastapi)](https://fastapi.tiangolo.com)
-[![WebSocket](https://img.shields.io/badge/Real-time-WS-orange?style=for-the-badge&logo=socket.io)](http://localhost:7860/ws)
-[![Docker](https://img.shields.io/badge/Docker-Ready-blue?style=for-the-badge&logo=docker)](Dockerfile)
+Production-grade OpenEnv environment for customer support AI training with real-time dashboard, advanced grading, and multi-task workflows.
 
----
+## Features
 
-## 🎯 **What Makes This Best? 🔥**
+- **Multi-Task Training**: Easy, Medium, and Hard difficulty levels
+- **Real-Time Dashboard**: Live metrics, conversation tracking, and visual workflow timeline
+- **Advanced Grading**: Weighted scoring with detailed feedback
+- **Database Persistence**: SQLite-based session and user management
+- **Authentication**: Token-based user authentication and rate limiting
+- **Analytics**: Performance trends, leaderboards, and data export
+- **WebSocket Updates**: Real-time state synchronization
+- **Custom Scenarios**: Dynamic task generation from user input
 
-**SupportAI-Env** = **Production-grade AI support agent simulator** with a **drop-dead gorgeous dashboard** that turns boring RL training into a **command-center experience**.
-
-### **Core Superpowers:**
-- 🎬 **Visual Workflow Timeline** – Expected vs Actual steps (animated stepper)
-- 📊 **Live Metrics + Auto-Grading** – Rewards, tone detection, latency RT
-- 🗂️ **Rich Task Library** – 3 benchmarks + infinite custom scenarios
-- 🕐 **Event Log + Deep Inspection** – Every decision captured forever
-- ⚡ **WebSocket Real-Time** – Zero lag updates across all panels
-- � **Mobile-First Responsive** – iPhone → 8K monitor (flawless)
-
----
-
-## ⚡ **5-Second Launch** 
+## Quick Start
 
 ```bash
-# Clone → Install → Fly
-git clone <repo> && cd Meta_Project
+# Install dependencies
 pip install -r requirements.txt
-python3 start_server.py
+
+# Start server
+python start_server.py
+
+# Access dashboard
+http://localhost:7860
 ```
 
-**BOOM!** Opens http://localhost:7860 🚀
+## API Endpoints
 
----
+### Core Endpoints
+- `POST /reset` - Start new session
+- `POST /step` - Execute action
+- `GET /state` - Get current state
+- `POST /custom_reset` - Custom scenario
 
-## 🎮 **Game Modes – From Noob to Pro**
+### Authentication
+- `POST /auth/register` - Register user
+- `POST /auth/login` - Login user
 
-| Level | Scenario | Workflow Example | Tone Challenge | Pro Tip |
-|-------|----------|------------------|----------------|---------|
-| � **EASY** | Order Status | `ask_details → reply` | Neutral | Perfect 1st training |
-| � **MEDIUM** | Refund Flow | `ask → validate → refund` | Complaint | Multi-step mastery |
-| 🔴 **HARD** | Angry Multi-Issue | `empathy → details → refund → close` | FURIOUS 🔥 | Tone + intent beast |
-| ✨ **CUSTOM** | Your text → AI adapts | Dynamic workflow | Auto-detect | Unlimited scenarios |
+### Analytics
+- `GET /analytics/user` - User performance
+- `GET /analytics/task/{id}` - Task statistics
+- `GET /analytics/leaderboard` - Global rankings
 
-**Scoring:** 🏆 Full (1.0) | ⚡ Partial (0.6+) | ❌ Fail (0.0)
+### Monitoring
+- `GET /health` - Health check
+- `GET /metrics` - System metrics
+- `GET /docs` - API documentation
 
----
+## Task Levels
 
-## 🖥️ **Killer Dashboard Walkthrough**
+| Level | Scenario | Max Steps | Description |
+|-------|----------|-----------|-------------|
+| Easy | Order Status | 4 | Simple inquiry with neutral tone |
+| Medium | Refund Processing | 6 | Multi-step workflow with complaints |
+| Hard | Multi-Issue Complaint | 8 | Complex angry customer scenario |
 
-```
-Hero Section ──📊 Live Stats (Sessions/Steps/Latency/Server Health)
-    ↓
-Scenario Library ──🃏 Cards w/ full details (click → deep dive)
-    ↓
-Main Console ──📈 Workflow Timeline + Conversation + Actions
-    ↓
-Run Details ──🔍 State/Tone/Intent/Grade snapshots
-    ↓
-Event River ──📜 Chronological decision log
-```
+## Action Space
 
-**Pro Moves:**
-- **Suggested Action** glows yellow 
-- **Custom Mode** = paste customer tweet → instant benchmark
-- **Export JSON** = all data for analysis
-- **Keyboard Shortcuts** = 1=Reply, 2=Ask, 3=Refund, 4=Escalate
+- `reply` - Send response to customer
+- `ask_details` - Request more information
+- `refund` - Process refund
+- `escalate` - Escalate to supervisor
 
----
+## Deployment
 
-## 🛠 **Tech That Slaps**
-
-```
-Frontend: Vanilla JS/CSS (Zero bloat = 120kb total)
-Backend: FastAPI + Async WebSocket
-AI Brain: OpenAI GPT + Deterministic Grader
-State Machine: Tone-aware FSM
-Data: Live metrics + JSON export
-Infra: Dockerized + Zero-config
-```
-
----
-
-## 🎯 **Why Developers Lose Their Minds Over This**
-
-```
-❌ OLD: Console.log() spam + manual grading spreadsheets
-✅ NEW: Real-time dashboard + auto A/B + export everything
-```
-
-**Benchmark Results Live:**
-```
-Easy: 1.0 score (4 steps) – 98% success rate
-Medium: 0.85 score (6 steps) – 82% success rate  
-Hard: 0.72 score (8 steps) – 65% success rate
-Custom: Adaptive – Unlimited replay value
-```
-
----
-
-## 🚀 **Deploy Like a Boss**
-
-**Production:**
-```dockerfile
-# Dockerfile already included
+### Docker
+```bash
 docker build -t supportai-env .
 docker run -p 7860:7860 supportai-env
 ```
 
-**Cloud:**
-```
-Vercel/Render/Railway – FastAPI native
-1-click deploy → $0.02/hour → scales to millions
-```
+### Hugging Face Spaces
+This project is configured for deployment on Hugging Face Spaces with Docker runtime.
+
+## Tech Stack
+
+- **Backend**: FastAPI + Uvicorn
+- **Database**: SQLite with thread-safe operations
+- **AI**: OpenAI GPT for tone detection
+- **Frontend**: Vanilla JavaScript with WebSocket
+- **Deployment**: Docker + Hugging Face Spaces
+
+## OpenEnv Compliance
+
+This environment follows OpenEnv standards:
+- Structured API endpoints (`/reset`, `/step`, `/state`)
+- Deterministic grading system
+- Reproducible results
+- Standard observation/action/reward interface
+
+## License
+
+MIT
 
 ---
 
-## 🤖 **Power Users Guide**
-
-```bash
-# Training loop (infinite)
-while true; do
-  python3 -c "from inference import main; main()"
-  echo "🏆 Beat your PB!"
-done
-
-# Custom dataset → 10k scenarios
-cat customers.txt | while read msg; do
-  curl -X POST http://localhost:7860/custom_reset -d "{\"message\":\"$msg\"}"
-done
-```
-
----
-
-## 📈 **Results That Matter**
-
-```
-✅ 95% faster iteration (dashboard vs console)
-✅ 3x more insights (live vs post-mortem)
-✅ 100% reproducible grading
-✅ Works offline (deterministic core)
-✅ Zero vendor lock-in (bring your LLM)
-```
-
----
-
-## 👥 **Community Heatmap**
-
-⭐ **GitHub Stars**: Watch it explode
-💬 **Discord**: Join the training squad  
-🐛 **Issues**: Feature requests → PRs
-
----
-
-## 🎁 **Bonus Loot**
-
-- **API Playground**: http://localhost:7860/docs (Swagger)
-- **Metrics Export**: `/metrics` JSON endpoint
-- **Session Archive**: LocalStorage auto-save
-- **Dark Mode**: Coming v2.1
-- **Multi-agent**: Coming v3.0
-
----
-
-**Built with ❤️ for AI trainers who hate boring UIs**
-
-```
-Made by Techmaster – Because good enough is never enough
-Version 2.0 – The dashboard that makes competitors cry
-```
-
-**[Start Training Now → http://localhost:7860](http://localhost:7860)** 🚀
+**Version 3.0.0** | Built for AI trainers and researchers
