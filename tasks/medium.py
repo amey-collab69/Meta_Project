@@ -20,8 +20,8 @@ TASK = {
         "Agent must collect details, validate, then process refund."
     ),
     "scoring": {
-        "full_score": 1.0,
-        "partial_score": 0.5,
-        "fail_score": 0.0,
+        "full_score": 0.90,
+        "partial_score": 0.55,
+        "fail_score": 0.20,
     },
 }

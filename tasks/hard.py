@@ -19,8 +19,8 @@ TASK = {
         "Agent must detect tone, acknowledge emotion, collect details, and resolve both issues."
     ),
     "scoring": {
-        "full_score": 1.0,
-        "partial_score": 0.6,
-        "fail_score": 0.0,
+        "full_score": 0.85,
+        "partial_score": 0.50,
+        "fail_score": 0.25,
     },
 }
