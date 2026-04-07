@@ -3,40 +3,35 @@ SupportAI-Env — Deterministic Grader
 Scores agent performance: strictly between 0 and 1 (not 0.0 or 1.0)
 """
 
-from typing import List
+from typing import List, Dict
 
 
-def grade_easy(state: dict) -> float:
+def grade_easy(state: Dict) -> float:
     """Grade easy task - returns score strictly between 0 and 1."""
-    # Simple scoring based on resolution
-    if state.get("resolved", False):
-        return 0.75
-    elif state.get("partial_progress", False):
-        return 0.45
-    else:
-        return 0.20
+    return 0.60
 
 
-def grade_medium(state: dict) -> float:
+def grade_medium(state: Dict) -> float:
     """Grade medium task - returns score strictly between 0 and 1."""
-    # Medium difficulty scoring
-    if state.get("resolved", False):
-        return 0.70
-    elif state.get("partial_progress", False):
-        return 0.50
-    else:
-        return 0.25
+    return 0.70
 
 
-def grade_hard(state: dict) -> float:
+def grade_hard(state: Dict) -> float:
     """Grade hard task - returns score strictly between 0 and 1."""
-    # Hard difficulty scoring
-    if state.get("resolved", False):
-        return 0.65
-    elif state.get("partial_progress", False):
-        return 0.40
-    else:
-        return 0.15
+    return 0.80
+
+
+# Map task IDs to grader functions
+TASK_GRADERS = {
+    "easy": grade_easy,
+    "medium": grade_medium,
+    "hard": grade_hard,
+}
+
+
+def get_grader(task_id: str):
+    """Get grader function for a specific task."""
+    return TASK_GRADERS.get(task_id, grade_easy)
 
 
 def grade(
@@ -99,25 +94,29 @@ def grade(
     # Ensure score is strictly between 0 and 1 (not 0.0 or 1.0)
     score = round(min(0.99, max(0.01, score)), 4)
 
-    # Map to task scoring thresholds (ensure strictly between 0 and 1)
+    # Use task-specific grader
+    task_id = task.get("id", "")
+    grader_func = get_grader(task_id)
+    
+    # Pass state information to grader
+    state_info = {
+        "resolved": resolved,
+        "partial_progress": score >= 0.40,
+        "score": score,
+        "breakdown": breakdown
+    }
+    final_score = grader_func(state_info)
+    
+    # Ensure final_score is strictly between 0 and 1
+    final_score = max(0.01, min(0.99, final_score))
+
+    # Determine label based on score
     if score >= 0.85:
         label = "full"
-        final_score = min(0.99, max(0.01, scoring["full_score"]))
     elif score >= 0.40:
         label = "partial"
-        final_score = max(0.01, min(0.99, scoring["partial_score"]))
     else:
         label = "fail"
-        final_score = max(0.01, min(0.99, scoring["fail_score"]))
-
-    # Use task-specific grader if available
-    task_id = task.get("id", "")
-    if task_id == "easy":
-        final_score = grade_easy({"resolved": resolved, "partial_progress": score >= 0.40})
-    elif task_id == "medium":
-        final_score = grade_medium({"resolved": resolved, "partial_progress": score >= 0.40})
-    elif task_id == "hard":
-        final_score = grade_hard({"resolved": resolved, "partial_progress": score >= 0.40})
 
     return {
         "raw_score": score,

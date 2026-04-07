@@ -431,7 +431,11 @@ def calculate_reward(
     if action not in expected_actions and is_valid:
         reward -= 0.3
 
-    return round(max(-1.0, min(1.0, reward)), 4)
+    # Ensure reward is strictly between 0 and 1 (not -1 to 1)
+    # Map from [-1, 1] to (0, 1) strictly
+    reward = (reward + 1.0) / 2.0  # Maps [-1,1] to [0,1]
+    reward = max(0.01, min(0.99, reward))  # Ensure strictly between 0 and 1
+    return round(reward, 4)
 
 # ─── Environment ─────────────────────────────────────────────────────────────
 
@@ -608,6 +612,7 @@ class SupportEnv:
         )
         
         info["processing_time_ms"] = round(processing_time, 2)
+        info["score"] = reward  # Add score for OpenEnv validation
         return self._obs, reward, done, info
 
     def state(self) -> Observation:
