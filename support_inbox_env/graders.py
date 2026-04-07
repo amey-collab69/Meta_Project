@@ -4,6 +4,9 @@ from typing import Dict, Tuple
 
 from support_inbox_env.models import ActionType, SupportAction, TaskSpec
 
+MIN_TASK_SCORE = 0.01
+MAX_TASK_SCORE = 0.99
+
 
 def _keyword_fraction(text: str, keywords: list[str]) -> float:
     lowered = text.lower()
@@ -18,6 +21,12 @@ def _latest_text(latest_values: Dict[ActionType, SupportAction], action_type: Ac
     if not action:
         return ""
     return " ".join(part for part in [action.value, action.message] if part).strip()
+
+
+def _normalize_task_score(raw_score: float) -> float:
+    raw_score = max(0.0, min(1.0, raw_score))
+    scaled = MIN_TASK_SCORE + raw_score * (MAX_TASK_SCORE - MIN_TASK_SCORE)
+    return round(scaled, 4)
 
 
 def evaluate_progress(
@@ -85,5 +94,5 @@ def evaluate_progress(
         else:
             components["final_action"] = 0.0
 
-    total_score = round(sum(components.values()) / float(len(components)), 4)
+    total_score = _normalize_task_score(sum(components.values()) / float(len(components)))
     return components, total_score
