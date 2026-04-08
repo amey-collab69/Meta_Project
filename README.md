@@ -1,3 +1,13 @@
+---
+title: TechmasterMeta
+emoji: "🤖"
+colorFrom: "orange"
+colorTo: "yellow"
+sdk: "docker"
+app_file: "Dockerfile"
+pinned: false
+---
+
 # SupportAI-Env
 
 A production-grade OpenEnv environment for evaluating AI agents on customer support workflows.
