@@ -1,8 +1,8 @@
 ---
 title: TechmasterMeta
 emoji: "🤖"
-colorFrom: "orange"
-colorTo: "yellow"
+colorFrom: "yellow"
+colorTo: "red"
 sdk: "docker"
 app_file: "Dockerfile"
 pinned: false
