@@ -1,3 +1,13 @@
+---
+title: TechmasterMeta
+emoji: "🤖"
+colorFrom: "yellow"
+colorTo: "red"
+sdk: "docker"
+app_file: "Dockerfile"
+pinned: false
+---
+
 # 🚀 SupportAI-Env – Ultimate Customer Support AI Training Dashboard
 
 [![Modern Dashboard](https://img.shields.io/badge/UI-Killer%20Dashboard-007ACC?style=for-the-badge&logo=tailwindcss)](http://localhost:7860)
