@@ -47,11 +47,21 @@ class SupportInboxEnvironment:
         ]
 
     def reset(self, task_id: Optional[str] = None) -> SupportObservation:
-        chosen_task_id = task_id or self._task_order[self._task_cursor % len(self._task_order)]
+        chosen_task_id = self._resolve_task_id(task_id)
         self._task_cursor += 1
         task = TASK_LOOKUP[chosen_task_id]
         self._episode = EpisodeMemory(task=task)
         return self._build_observation("Environment reset. Review the ticket and begin triage.")
+
+    def _resolve_task_id(self, task_id: Optional[str]) -> str:
+        if task_id in TASK_LOOKUP:
+            return task_id
+        if task_id in {"easy", "medium", "hard"}:
+            target = task_id
+            for task in TASKS:
+                if task.difficulty.value == target:
+                    return task.task_id
+        return self._task_order[self._task_cursor % len(self._task_order)]
 
     def step(self, action: SupportAction) -> StepResponse:
         if self._episode is None:
