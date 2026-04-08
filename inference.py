@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
 
@@ -12,27 +12,30 @@ from support_inbox_env.models import ActionType, SupportAction
 from support_inbox_env.tasks import TASKS
 
 
-SYSTEM_PROMPT = """You are a support-operations agent acting in a deterministic RL environment.
-Return exactly one JSON object with keys: action_type, value, message.
-Choose one of these action types only: classify_intent, set_priority, assign_team, draft_reply, resolve, escalate.
-Do not include markdown fences or any extra text.
-"""
+SYSTEM_PROMPT = (
+    "You are a support-operations agent acting in a deterministic RL environment. "
+    "Return exactly one JSON object with keys: action_type, value, message. "
+    "Choose one of: classify_intent, set_priority, assign_team, draft_reply, resolve, escalate. "
+    "Do not include markdown fences or any extra text."
+)
 
 
-def log_start(task_id: str, difficulty: str) -> None:
-    print(f"[START] task_id={task_id} difficulty={difficulty}")
+def log_start(task: str, env_name: str, model: str) -> None:
+    print(f"[START] task={task} env={env_name} model={model}", flush=True)
 
 
-def log_step(task_id: str, step_index: int, action: SupportAction, reward: float, done: bool, score: float) -> None:
+def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
+    error_val = error if error else "null"
+    done_val = str(done).lower()
     print(
-        "[STEP] "
-        f"task_id={task_id} step={step_index} action_type={action.action_type.value} "
-        f"value={json.dumps(action.value)} reward={reward:.4f} done={str(done).lower()} score={score:.4f}"
+        f"[STEP] step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}",
+        flush=True,
     )
 
 
-def log_end(task_id: str, final_score: float, steps: int) -> None:
-    print(f"[END] task_id={task_id} final_score={final_score:.4f} steps={steps}")
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    print(f"[END] success={str(success).lower()} steps={steps} score={score:.2f} rewards={rewards_str}", flush=True)
 
 
 def build_user_prompt(observation: Dict[str, Any]) -> str:
@@ -120,64 +123,69 @@ def call_model(client: OpenAI, model_name: str, observation: Dict[str, Any]) -> 
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": build_user_prompt(observation)},
         ],
-        temperature=0,
+        temperature=0.2,
     )
     content = response.choices[0].message.content or "{}"
     parsed = parse_action(content)
     return SupportAction.model_validate(parsed)
 
 
-def require_env(name: str) -> str:
+def get_env(name: str, default: Optional[str] = None) -> Optional[str]:
     value = os.getenv(name)
-    if not value:
-        raise RuntimeError(f"Missing required environment variable: {name}")
-    return value
+    return value if value else default
 
 
 def run() -> int:
-    api_base_url = require_env("API_BASE_URL")
-    model_name = require_env("MODEL_NAME")
-    hf_token = require_env("HF_TOKEN")
-    request_timeout = float(os.getenv("MODEL_TIMEOUT_SECONDS", "8"))
+    api_base_url = get_env("API_BASE_URL", "https://router.huggingface.co/v1")
+    model_name = get_env("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct") or "unknown-model"
+    hf_token = get_env("HF_TOKEN") or get_env("API_KEY")
+    request_timeout = float(os.getenv("MODEL_TIMEOUT_SECONDS", "10"))
 
-    client = OpenAI(base_url=api_base_url, api_key=hf_token, timeout=request_timeout)
+    client = OpenAI(base_url=api_base_url, api_key=hf_token, timeout=request_timeout) if hf_token else None
     env = SupportInboxEnvironment()
 
-    task_scores: List[float] = []
-
     for task in TASKS:
-        observation = env.reset(task.task_id).model_dump(mode="json")
-        log_start(task.task_id, task.difficulty.value)
+        rewards: List[float] = []
+        steps_taken = 0
+        score = 0.0
+        success = False
 
-        done = False
-        steps = 0
-        final_score = 0.0
+        log_start(task=task.task_id, env_name="support-inbox-openenv", model=model_name)
 
-        while not done and steps < task.max_turns:
-            try:
-                action = call_model(client, model_name, observation)
-            except Exception:
-                action = fallback_policy(observation)
+        try:
+            result = env.reset(task.task_id)
+            observation = result.model_dump(mode="json")
+            done = False
 
-            result = env.step(action)
-            steps += 1
-            final_score = float(result.info["grader_score"])
-            log_step(task.task_id, steps, action, result.reward.value, result.done, final_score)
+            while not done and steps_taken < task.max_turns:
+                try:
+                    if client is None:
+                        raise RuntimeError("Missing HF_TOKEN")
+                    action = call_model(client, model_name, observation)
+                except Exception:
+                    action = fallback_policy(observation)
 
-            observation = result.observation.model_dump(mode="json")
-            done = result.done
+                step_result = env.step(action)
+                steps_taken += 1
+                reward_val = float(step_result.reward.value)
+                rewards.append(reward_val)
 
-        log_end(task.task_id, final_score, steps)
-        task_scores.append(final_score)
+                score = float(step_result.info.get("grader_score", 0.0))
+                done = step_result.done
 
-    average_score = sum(task_scores) / len(task_scores)
-    print(f"[END] average_score={average_score:.4f} task_count={len(task_scores)}")
+                action_str = f"{action.action_type.value}({action.value},{action.message})"
+                log_step(step=steps_taken, action=action_str, reward=reward_val, done=done, error=None)
+
+                observation = step_result.observation.model_dump(mode="json")
+
+            success = score > 0.0
+        except Exception:
+            success = False
+        finally:
+            log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
+
     return 0
 
 
 if __name__ == "__main__":
-    try:
-        raise SystemExit(run())
-    except Exception as exc:
-        print(f"[END] status=error message={json.dumps(str(exc))}")
-        raise SystemExit(1)
+    raise SystemExit(run())
