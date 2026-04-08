@@ -5,6 +5,19 @@ Scores agent performance: 0.0 → 1.0
 
 from typing import List
 
+_EPS = 1e-4
+
+
+def _strict_unit_interval(value: float, eps: float = _EPS) -> float:
+    """
+    Clamp to the open interval (0, 1) to satisfy strict validator requirements.
+    """
+    if value <= 0.0:
+        return eps
+    if value >= 1.0:
+        return 1.0 - eps
+    return value
+
 
 def grade(
     task: dict,
@@ -64,6 +77,7 @@ def grade(
         breakdown["tone_handled"] = "n/a"
 
     score = round(min(1.0, max(0.0, score)), 4)
+    score_strict = round(_strict_unit_interval(score), 4)
 
     # Map to task scoring thresholds
     if score >= 0.85:
@@ -76,8 +90,10 @@ def grade(
         label = "fail"
         final_score = scoring["fail_score"]
 
+    final_score = round(_strict_unit_interval(float(final_score)), 4)
+
     return {
-        "raw_score": score,
+        "raw_score": score_strict,
         "final_score": final_score,
         "label": label,
         "breakdown": breakdown,
