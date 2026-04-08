@@ -132,9 +132,9 @@ def get_metrics():
     )
 
 @app.post("/reset")
-async def reset(req: ResetRequest):
+async def reset(req: Optional[ResetRequest] = None):
     start_time = time.time()
-    task_id = req.task_id
+    task_id = req.task_id if req else "easy"
     if task_id not in TASKS:
         raise HTTPException(status_code=400, detail=f"Unknown task_id '{task_id}'. Choose: easy, medium, hard")
     session_id = req.session_id or str(uuid.uuid4())
